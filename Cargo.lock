@@ -526,6 +526,7 @@ name = "kerneltrace-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aya",
  "clap",
  "ctrlc",
  "kerneltrace-core",

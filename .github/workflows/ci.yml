@@ -81,6 +81,78 @@ jobs:
       - name: Build live binary
         run: cargo build --release --features live --locked
 
+  live-kernel:
+    # Privileged, hardware-dependent job: kept separate from the portable jobs.
+    # Loads the real probe into the runner VM's kernel under sudo.
+    name: Live kernel (load probe, trace known activity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BPF_LINKER_VERSION: v0.12.0
+      BPF_LINKER_SHA256: 6789717c8cb6a2a5d920f3b6bfac2bd7efc00f6228ecd149108a99699a75c679
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: nightly-2026-09-17
+          components: rust-src
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install bpf-linker (prebuilt, checksum-verified)
+        run: |
+          url="https://github.com/aya-rs/bpf-linker/releases/download/${BPF_LINKER_VERSION}/bpf-linker-x86_64-unknown-linux-musl.tar.zst"
+          curl -fsSL "$url" -o bpf-linker.tar.zst
+          echo "${BPF_LINKER_SHA256}  bpf-linker.tar.zst" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar --zstd -xf bpf-linker.tar.zst -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Record environment (no external tools)
+        run: |
+          set -x
+          uname -a
+          head -n 4 /etc/os-release
+          ls -l /sys/kernel/btf/vmlinux || echo "BTF: /sys/kernel/btf/vmlinux missing"
+          cat /sys/kernel/security/lockdown || echo "lockdown: not readable"
+          cat /proc/sys/kernel/unprivileged_bpf_disabled || true
+          sudo ls -d /sys/kernel/tracing/events/sched/sched_process_exec \
+            /sys/kernel/tracing/events/syscalls/sys_enter_openat || true
+          grep CapEff /proc/self/status
+          sudo grep CapEff /proc/self/status
+      - name: Build probe
+        working-directory: crates/kerneltrace-ebpf
+        run: cargo build --release
+      - name: Build live binary and capability report
+        run: |
+          cargo build --release --features live --locked -p kerneltrace-mcp
+          ./target/release/kerneltrace-mcp --capabilities
+          sudo ./target/release/kerneltrace-mcp --capabilities
+      - name: Build live-kernel test (unprivileged)
+        run: |
+          bin=$(cargo test --features live --locked -p kerneltrace-mcp --test live_kernel --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_kernel" and .profile.test) | .executable')
+          test -x "$bin" || { echo "test binary not found"; exit 1; }
+          echo "LIVE_TEST_BIN=$bin" >> "$GITHUB_ENV"
+      - name: Run live-kernel test as root
+        run: |
+          sudo KERNELTRACE_EBPF_OBJECT="${GITHUB_WORKSPACE}/crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf" \
+            "$LIVE_TEST_BIN" --ignored --nocapture --test-threads=1
+      # Optional and never gating: the test itself checks attach/detach through
+      # aya's program list. bpftool is not reliably installable on every runner
+      # kernel flavour (e.g. -azure packages that ship only the wrapper).
+      - name: bpftool diagnostics (optional)
+        if: always()
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y -q linux-tools-common "linux-tools-$(uname -r)" >/dev/null 2>&1 || true
+          for c in $(find /usr/lib -path '*tools*' -name bpftool -type f -perm -u+x 2>/dev/null | sort -r) /usr/sbin/bpftool; do
+            if sudo "$c" version >/dev/null 2>&1; then
+              sudo "$c" version
+              sudo "$c" feature probe kernel 2>/dev/null | grep -iE "ringbuf|tracepoint" || true
+              sudo "$c" prog show | grep -E "kt_(exec|exit|open)" || echo "no kt_* programs loaded"
+              exit 0
+            fi
+          done
+          echo "no runnable bpftool on this runner (diagnostic only)"
+
   deny:
     runs-on: ubuntu-latest
     steps:

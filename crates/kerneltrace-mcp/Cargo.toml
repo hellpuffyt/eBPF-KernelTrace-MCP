@@ -24,5 +24,9 @@ serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
 
+# The live-kernel test lists loaded BPF programs through aya (no bpftool needed).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+aya.workspace = true
+
 [lints]
 workspace = true
