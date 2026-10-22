@@ -1,0 +1,36 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Include the exact command and output. Remove any paths or data you consider private.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: [synthetic, live]
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: "Output of `kerneltrace-mcp --capabilities`, `kerneltrace-mcp --version`, OS/distro, and (for live mode) `uname -r`."
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: MCP client (if relevant)

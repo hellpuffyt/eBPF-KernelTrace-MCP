@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            features: live
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            features: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            features: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - run: cargo test --locked
+      - run: cargo build --release --locked --features "${{ matrix.features }}"
+        shell: bash
+      - name: Package
+        shell: bash
+        run: |
+          name="kerneltrace-mcp-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp README.md LICENSE-MIT LICENSE-APACHE examples/kerneltrace.toml "$name/"
+          if [ -f target/release/kerneltrace-mcp.exe ]; then cp target/release/kerneltrace-mcp.exe "$name/"; else cp target/release/kerneltrace-mcp "$name/"; fi
+          tar -czf "$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: kerneltrace-mcp-*.tar.gz
+
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      BPF_LINKER_VERSION: v0.12.0
+      BPF_LINKER_SHA256: 6789717c8cb6a2a5d920f3b6bfac2bd7efc00f6228ecd149108a99699a75c679
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: nightly-2026-09-17
+          components: rust-src
+      - name: Install bpf-linker (prebuilt, checksum-verified)
+        run: |
+          url="https://github.com/aya-rs/bpf-linker/releases/download/${BPF_LINKER_VERSION}/bpf-linker-x86_64-unknown-linux-musl.tar.zst"
+          curl -fsSL "$url" -o bpf-linker.tar.zst
+          echo "${BPF_LINKER_SHA256}  bpf-linker.tar.zst" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar --zstd -xf bpf-linker.tar.zst -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - working-directory: crates/kerneltrace-ebpf
+        run: cargo build --release
+      - run: cp crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf kerneltrace-ebpf.o
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-probe
+          path: kerneltrace-ebpf.o
+
+  publish:
+    needs: [build, probe]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dist-*
+          merge-multiple: true
+      - run: sha256sum kerneltrace-mcp-*.tar.gz kerneltrace-ebpf.o > SHA256SUMS
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: |
+            kerneltrace-mcp-*.tar.gz
+            kerneltrace-ebpf.o
+            SHA256SUMS
