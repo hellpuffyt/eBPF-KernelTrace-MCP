@@ -75,7 +75,7 @@ jobs:
         working-directory: crates/kerneltrace-ebpf
         run: cargo build --release
       - name: Check object against loader expectations
-        run: cargo test -p kerneltrace-core --test probe_object --locked -- --nocapture
+        run: cargo test -p kerneltrace-core --test probe_object --locked -- --ignored --nocapture
         env:
           KERNELTRACE_EBPF_OBJECT: ${{ github.workspace }}/crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf
       - name: Build live binary
