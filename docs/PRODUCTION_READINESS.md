@@ -130,9 +130,9 @@ Userspace only. Criterion micro-benchmarks plus an end-to-end example, measured 
 | 16 | Probe object matches loader | programs, map, global, license | `probe_object -- --ignored` | PASS | — | `probe_object.rs` |
 | 17 | Lint / docs / deps | clean | fmt, clippy (host and Linux), doc, deny, audit | PASS | all exit 0 | CI `lint`, `deny` |
 | 18 | MSRV 1.88 | builds | `cargo +1.88 check` | PASS | exit 0 (host) | CI `msrv` |
-| 19 | Live probe loads and attaches | programs attach to the 3 tracepoints | — | **Not verified** | requires Linux ≥ 5.8 with BTF + CAP_BPF | `live.rs` |
-| 20 | Live events are correct | exec/exit/open events match real activity | — | **Not verified** | requires Linux ≥ 5.8 with BTF + CAP_BPF | `kerneltrace-ebpf` |
-| 21 | Live-mode overhead and loss | measured kernel cost and drop rate | — | **Not verified** | requires Linux ≥ 5.8 with BTF + CAP_BPF | — |
+| 19 | Live probe loads and attaches | programs attach to the 3 tracepoints; only enabled ones load | CI `live-kernel` → `tests/live_kernel.rs` | **Pending** (job exists, not yet run) | requires Linux ≥ 5.8 with BTF + CAP_BPF | `live.rs` |
+| 20 | Live events are correct | exec/exit/open events match real activity (pids, comms, paths, ordering, redaction); clean detach on SIGTERM | CI `live-kernel` → `tests/live_kernel.rs` | **Pending** (job exists, not yet run) | requires Linux ≥ 5.8 with BTF + CAP_BPF | `kerneltrace-ebpf` |
+| 21 | Live-mode overhead and loss | measured kernel cost and drop rate | — | **Not verified** | requires Linux ≥ 5.8 with BTF + CAP_BPF; not covered by the CI job | — |
 | 22 | Third-party MCP client | works with a real desktop client | — | **Not verified** | no third-party client run | — |
 | 23 | CI green on this branch | all jobs pass | GitHub Actions | **Not yet run** | — | `.github/workflows/ci.yml` |
 
@@ -146,8 +146,20 @@ See [LIMITATIONS.md](LIMITATIONS.md). The most important ones:
 - MCP revision 2026-07-28 (stateless) not supported.
 - Benchmarks were taken under heavy unrelated load.
 
+## Live-kernel CI job (results pending)
+
+The `live-kernel` job in `.github/workflows/ci.yml` runs on a GitHub-hosted `ubuntu-latest` VM, which has passwordless sudo and a BTF-enabled kernel. The job:
+1. builds the probe and the `live` binary;
+2. records `uname -a`, BTF and tracefs presence, lockdown state, capabilities, and the `--capabilities` report (unprivileged and as root);
+3. installs `bpftool` for the running kernel;
+4. runs the ignored test `crates/kerneltrace-mcp/tests/live_kernel.rs` as root with `--ignored`.
+
+It has **not run yet**; this document will be updated with the real outcome. The test is never run on macOS. It fails, rather than skipping, if root, the probe object or `bpftool` is missing.
+
+What the test asserts is listed at the top of `tests/live_kernel.rs`.
+
 ## Needed for further verification
 
-- A Linux host or VM with kernel ≥ 5.8, BTF (`/sys/kernel/btf/vmlinux`), tracefs, and CAP_BPF+CAP_PERFMON (or root), to run items 19–21. A disposable VM is enough. No paid service is required.
+- A run of the `live-kernel` CI job (items 19–20). Item 21 still needs a dedicated Linux host or VM (kernel ≥ 5.8, BTF, CAP_BPF+CAP_PERFMON or root) for overhead measurements.
 - A desktop MCP client for item 22.
 - A GitHub Actions run of this branch for item 23.

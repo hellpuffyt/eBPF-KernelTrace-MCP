@@ -2,6 +2,8 @@
 
 > **Everything on this page is UNVERIFIED ON HARDWARE.** The probe builds, and `tests/probe_object.rs` checks its program and map layout. It has not yet been loaded into a running kernel by this project. If you run it, please report the result (kernel version, distro, arch) in an issue.
 
+> **Live CI job: results pending.** A `live-kernel` job now exists in `.github/workflows/ci.yml`. It loads the probe on a GitHub-hosted `ubuntu-latest` VM under sudo, traces known processes and a known file, and checks clean detach with `bpftool`. It has not run yet; this page will record the kernel version and outcome once it has.
+
 ## Requirements for live mode
 
 | Requirement | Why | Checked by `--capabilities` |
