@@ -110,8 +110,15 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q linux-tools-common "linux-tools-$(uname -r)" \
             || sudo apt-get install -y -q linux-tools-common linux-tools-azure
-          tool=$(find /usr/lib/linux-tools* -name bpftool -type f -perm -u+x 2>/dev/null | sort | tail -n1)
-          test -n "$tool" || { echo "bpftool not found"; exit 1; }
+          # Flavoured kernels (e.g. -azure) install bpftool under /usr/lib/linux-<flavour>-tools-*/,
+          # not /usr/lib/linux-tools*; /usr/sbin/bpftool is the linux-tools-common wrapper.
+          # Take the first candidate that actually runs.
+          tool=""
+          for c in $(find /usr/lib -path '*tools*' -name bpftool -type f -perm -u+x 2>/dev/null | sort -r) /usr/sbin/bpftool; do
+            if sudo "$c" version >/dev/null 2>&1; then tool="$c"; break; fi
+          done
+          test -n "$tool" || { echo "no runnable bpftool; candidates:"; find /usr/lib /usr/sbin -name 'bpftool*' 2>/dev/null; exit 1; }
+          sudo "$tool" version
           echo "BPFTOOL=$tool" >> "$GITHUB_ENV"
       - name: Record environment
         run: |
