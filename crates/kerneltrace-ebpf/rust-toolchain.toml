@@ -1,0 +1,5 @@
+# Pinned: the nightly's LLVM (23.x) must match what bpf-linker 0.12.0 links against.
+# Verified to build with this exact toolchain.
+[toolchain]
+channel = "nightly-2026-09-17"
+components = ["rust-src"]
