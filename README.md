@@ -162,7 +162,7 @@ If anything is missing, the binary exits and names each unmet requirement. It ne
 ```sh
 cargo test                       # unit, property, stress and stdio end-to-end tests
 KERNELTRACE_EBPF_OBJECT=crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf \
-  cargo test -p kerneltrace-core --test probe_object   # checks the built probe object
+  cargo test -p kerneltrace-core --test probe_object -- --ignored   # checks the built probe object
 cargo bench -p kerneltrace-core --bench pipeline
 cargo run --release -p kerneltrace-core --example pipeline_latency -- 5 0
 ```
