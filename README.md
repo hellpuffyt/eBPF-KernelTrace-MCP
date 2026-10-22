@@ -44,7 +44,7 @@ cargo test                                           # full suite, no privileges
 
 ### Use it from an MCP client
 
-The server speaks newline-delimited JSON-RPC 2.0 on stdio and negotiates MCP revisions `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`. Most desktop MCP clients accept an `mcpServers` entry like this:
+The server speaks newline-delimited JSON-RPC 2.0 on stdio and negotiates MCP revisions `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`, shaping its responses for whichever revision was agreed. The newest published revision, `2026-07-28` (stateless, no `initialize`), is **not** supported yet. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#mcp-surface) for the per-revision differences. Most desktop MCP clients accept an `mcpServers` entry like this:
 
 ```json
 {
@@ -94,7 +94,7 @@ The synthetic stream includes paths such as `/home/alice/.ssh/id_ed25519` and `/
 - Redaction: paths are off by default. When enabled, substring rules hide the whole path and directory-prefix rules hide everything below the prefix.
 - Capability detection: OS, kernel ≥ 5.8, tracefs, CAP_BPF+CAP_PERFMON or CAP_SYS_ADMIN, plus BTF presence (informational). Every unmet requirement is given as a plain-English reason.
 - MCP server over stdio: `initialize` with version negotiation, `ping`, `tools/list`, `tools/call`. Tools: `capabilities`, `query_events`, `summarize_events`, `stats`. All tools are read-only and carry `readOnlyHint` annotations.
-- Protocol hardening: 1 MiB message cap, parse errors that don't kill the session, strict argument schemas, and graceful shutdown on EOF, SIGINT/SIGTERM or EPIPE.
+- Protocol hardening: 1 MiB message cap, parse errors that don't kill the session, strict and bounded argument validation with field-level error messages, tools refused before `initialize`, and graceful shutdown on EOF, SIGINT/SIGTERM or EPIPE.
 - TOML configuration with unknown-key rejection and range validation.
 
 **Experimental (compiles; unverified on a live kernel)**

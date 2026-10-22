@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+- Responses are now shaped for the negotiated MCP revision. `annotations` are sent only for 2025-03-26 and later; `title` and `structuredContent` only for 2025-06-18 and later. Previously every client received all of them.
+- Revision 2025-03-26 requires servers to accept JSON-RPC batches, but they were rejected. Batches (max 64) are now accepted for 2024-11-05 and 2025-03-26 and rejected for later revisions.
+- Invalid tool arguments are JSON-RPC `-32602` errors for revisions up to 2025-06-18 and `isError` tool results for 2025-11-25, as each revision's spec requires. Messages now name the offending field.
+- `pids`/`comms`/`kinds` (≤ 64 entries), `path_prefix`/`comms[]` (≤ 4096 bytes) and `last_secs` (≤ 1e9) are bounded, so one query cannot force a scan of 100k filter entries per event.
+- `tools/list` and `tools/call` before `initialize`, and requests with `null` or fractional ids, are rejected with `-32600`.
+
+### Added
+- `.editorconfig`, `docs/PRODUCTION_READINESS.md`.
+
 ## [0.1.0] - 2026-10-22
 
 ### Added
