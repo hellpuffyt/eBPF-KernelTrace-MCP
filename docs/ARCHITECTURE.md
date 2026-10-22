@@ -51,11 +51,42 @@ On Windows, `ctrlc` maps Ctrl-C/Ctrl-Break/close to the same path.
 
 ## MCP surface
 
+Supported revisions: `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`. All four were checked against the published specification and schemas on 2026-10-22. The newest published revision, **`2026-07-28`, is not supported**. It is stateless: there is no `initialize`, `ping` is removed, and `server/discover` is mandatory. A 2026-07-28 client probing with `server/discover` gets `-32601` here, which that revision's stdio rules treat as "legacy server, fall back to `initialize`".
+
 | Method | Behaviour |
 |---|---|
-| `initialize` | Echoes the client's `protocolVersion` if supported (`2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`), else answers with the newest. Advertises `tools` only. |
-| `ping` | `{}` |
-| `tools/list` | 4 tools, each with a JSON Schema (`additionalProperties: false`) and `readOnlyHint: true`. |
-| `tools/call` | Unknown tool → JSON-RPC `-32602`. Bad arguments → result with `isError: true`, so the model can correct itself. Success → `structuredContent` plus the same JSON as text content. |
+| `initialize` | Echoes the client's `protocolVersion` if supported, else answers with `2025-11-25`. Advertises `tools` only. Must not appear inside a batch. |
+| `ping` | `{}`. Allowed before `initialize`. |
+| `tools/list`, `tools/call` before `initialize` | `-32600` "server not initialized: send initialize before …" |
+| `tools/list` | 4 tools in a fixed order. Each has a JSON Schema (`additionalProperties: false`, numeric bounds, `maxItems`). Fields depend on the revision (below). |
+| `tools/call`, unknown tool or malformed request | JSON-RPC `-32602` in every revision (message lists the available tools). |
+| `tools/call`, invalid arguments | Depends on the revision (below). The message names the offending field, e.g. ``invalid arguments for query_events: `pids[1]`: invalid value: integer `4294967296`, expected u32``. |
 | notifications | Accepted and ignored. |
-| arrays (batches) | Rejected with `-32600` (batching was removed from MCP in 2025-06-18). |
+| id | Must be a string or an integer (`null` or fractional ids are rejected with `-32600`). |
+
+### Per-revision differences
+
+Derived from each revision's `schema.ts` and `server/tools` page:
+
+| | 2024-11-05 | 2025-03-26 | 2025-06-18 | 2025-11-25 |
+|---|---|---|---|---|
+| `Tool.annotations` (`readOnlyHint` …) | — | ✓ | ✓ | ✓ |
+| `title` on tools / `serverInfo` | — | — | ✓ | ✓ |
+| `structuredContent` in results (the JSON is always also in `content[0].text`) | — | — | ✓ | ✓ |
+| JSON-RPC batches accepted (max 64 messages) | ✓ | ✓ (spec: MUST) | `-32600` | `-32600` |
+| invalid tool arguments reported as | `-32602` | `-32602` | `-32602` | result with `isError: true` |
+
+The 2025-11-25 tools page moved input-validation failures ("value out of range", wrong format) from protocol errors to tool-execution errors, so that models can self-correct. Earlier revisions list "invalid arguments" under protocol errors.
+
+### Input bounds
+
+| Argument | Bound |
+|---|---|
+| `limit` | 1 … `limits.max_query_limit` (default 500) |
+| `top_n` | 1 … 50 |
+| `pids`, `comms`, `kinds` | ≤ 64 entries each (filtering is O(entries × stored events)) |
+| `pids[]` | 0 … 2³²−1 |
+| `path_prefix`, `comms[]` | ≤ 4096 bytes |
+| `last_secs` | > 0 and ≤ 1e9 |
+| `after_seq` | 0 … 2⁶⁴−1 |
+| whole message | ≤ 1 MiB |

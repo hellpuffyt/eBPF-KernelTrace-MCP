@@ -316,3 +316,47 @@ fn invalid_config_is_reported() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("queue_capacity"));
 }
+
+#[test]
+fn legacy_revisions_over_stdio() {
+    // 2025-06-18: invalid arguments are JSON-RPC errors; no batches.
+    let mut s = Session::start(&["--rate", "1000"]);
+    let init = s.request(
+        "initialize",
+        json!({ "protocolVersion": "2025-06-18", "capabilities": {} }),
+    );
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+    let bad = s.request(
+        "tools/call",
+        json!({ "name": "query_events", "arguments": { "limit": -5 } }),
+    );
+    assert_eq!(bad["error"]["code"], -32602);
+    assert!(
+        bad["error"]["message"]
+            .as_str()
+            .expect("msg")
+            .contains("`limit`"),
+        "{bad}"
+    );
+    drop(s.stdin.take());
+    assert!(s.wait_exit().success());
+
+    // 2025-03-26: batches must be accepted; no structuredContent in results.
+    let mut s = Session::start(&["--rate", "1000"]);
+    s.request(
+        "initialize",
+        json!({ "protocolVersion": "2025-03-26", "capabilities": {} }),
+    );
+    s.send(&json!([
+        { "jsonrpc": "2.0", "id": 10, "method": "ping" },
+        { "jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": { "name": "stats" } }
+    ]));
+    let batch = s.read();
+    let arr = batch.as_array().expect("batch response");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["id"], 10);
+    assert_eq!(arr[1]["result"]["isError"], false);
+    assert!(arr[1]["result"].get("structuredContent").is_none());
+    drop(s.stdin.take());
+    assert!(s.wait_exit().success());
+}
