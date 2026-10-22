@@ -4,7 +4,6 @@
 //! Requirements (a missing one is a FAILURE when this test is run):
 //! - Linux with the BPF ring buffer (≥ 5.8), tracefs, running as root;
 //! - `KERNELTRACE_EBPF_OBJECT` = path to the compiled probe;
-//! - `bpftool` on `PATH` or in `BPFTOOL` (used to prove attach and detach);
 //! - built with `--features live`.
 //!
 //! It is ignored by default and run explicitly by CI's `live-kernel` job:
@@ -18,8 +17,8 @@
 //!   unique file (path must be reported verbatim) and a file whose name
 //!   contains `token` (path must be `<redacted>`); exec carries the binary path.
 //!
-//! Both runs end with SIGTERM: exit status 0, and bpftool must show no
-//! `kt_*` programs left in the kernel.
+//! Both runs end with SIGTERM: exit status 0, and the kernel's program list
+//! (read with aya's `loaded_programs()`) must show no `kt_*` programs left.
 
 #![cfg(target_os = "linux")]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -51,51 +50,40 @@ fn is_root() -> bool {
         .unwrap_or(false)
 }
 
-fn bpftool() -> String {
-    if let Ok(p) = std::env::var("BPFTOOL") {
-        return p;
+/// Names of loaded BPF programs that belong to this probe, read through the
+/// kernel's program-id iterator (`BPF_PROG_GET_NEXT_ID`) via aya, so no
+/// external tool is needed. The kernel keeps at most 15 name bytes;
+/// `kt_exec`/`kt_exit`/`kt_open` fit.
+fn loaded_probe_programs() -> Vec<String> {
+    let mut names = Vec::new();
+    let mut listed = 0usize;
+    let mut errors = Vec::new();
+    for info in aya::programs::loaded_programs() {
+        listed += 1;
+        match info {
+            Ok(info) => {
+                if let Some(name) = info.name_as_str().filter(|n| PROGS.contains(n)) {
+                    names.push(name.to_string());
+                }
+            }
+            // A program can be unloaded between id enumeration and the fd
+            // lookup; that race is expected while detaching.
+            Err(e) => errors.push(e.to_string()),
+        }
     }
-    let ok = Command::new("bpftool")
-        .arg("version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    require(
-        ok.is_ok_and(|s| s.success()),
-        "bpftool (set BPFTOOL or put it on PATH)",
-    );
-    "bpftool".into()
-}
-
-/// Names of loaded BPF programs that belong to this probe.
-fn loaded_probe_programs(bpftool: &str) -> Vec<String> {
-    let out = Command::new(bpftool)
-        .args(["-j", "prog", "show"])
-        .output()
-        .expect("run bpftool");
     assert!(
-        out.status.success(),
-        "bpftool prog show failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+        listed == 0 || errors.len() < listed,
+        "could not inspect any loaded BPF program: {errors:?}"
     );
-    let progs: Value = serde_json::from_slice(&out.stdout).expect("bpftool JSON");
-    let mut names: Vec<String> = progs
-        .as_array()
-        .expect("array")
-        .iter()
-        .filter_map(|p| p["name"].as_str())
-        .filter(|n| PROGS.contains(n))
-        .map(String::from)
-        .collect();
     names.sort();
     names
 }
 
-fn wait_until_detached(bpftool: &str) {
+fn wait_until_detached() {
     // Program memory is freed asynchronously after the last fd closes.
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let left = loaded_probe_programs(bpftool);
+        let left = loaded_probe_programs();
         if left.is_empty() {
             return;
         }
@@ -177,7 +165,7 @@ fn ts(e: &Value) -> u64 {
 }
 
 /// Sends SIGTERM and checks a clean exit, clean stats and full detach.
-fn stop(mut s: Session, bpftool: &str) {
+fn stop(mut s: Session) {
     let stats = s.tool("stats", json!({}));
     eprintln!("stats before shutdown: {stats}");
     assert_eq!(stats["source"], "live");
@@ -206,7 +194,7 @@ fn stop(mut s: Session, bpftool: &str) {
     eprintln!("server stderr:\n{log}");
     assert!(status.success(), "exit status {status}");
     assert!(log.contains("shutting down (signal)"), "{log}");
-    wait_until_detached(bpftool);
+    wait_until_detached();
 }
 
 #[test]
@@ -218,7 +206,6 @@ fn live_probe_reports_known_activity() {
         Path::new(&object).is_file(),
         "KERNELTRACE_EBPF_OBJECT must point to the compiled probe",
     );
-    let bpftool = bpftool();
     eprintln!(
         "kernel: {}",
         std::fs::read_to_string("/proc/sys/kernel/osrelease")
@@ -226,7 +213,7 @@ fn live_probe_reports_known_activity() {
             .trim()
     );
     assert!(
-        loaded_probe_programs(&bpftool).is_empty(),
+        loaded_probe_programs().is_empty(),
         "stale kt_* programs loaded before the test"
     );
 
@@ -244,7 +231,7 @@ fn live_probe_reports_known_activity() {
     .expect("write");
     let mut s = start_server(&cfg_a);
     assert_eq!(
-        loaded_probe_programs(&bpftool),
+        loaded_probe_programs(),
         ["kt_exec", "kt_exit"],
         "kt_open must not load when open is off"
     );
@@ -287,7 +274,7 @@ fn live_probe_reports_known_activity() {
     let summary = s.tool("summarize_events", json!({}));
     assert!(summary["by_kind"].get("open").is_none(), "{summary}");
     assert!(summary["by_kind"]["exec"].as_u64().expect("exec") >= 1);
-    stop(s, &bpftool);
+    stop(s);
 
     // ---- Run B: open + include_paths, with redaction ----
     let cfg_b = dir.join("b.toml");
@@ -299,7 +286,7 @@ fn live_probe_reports_known_activity() {
     )
     .expect("write");
     let mut s = start_server(&cfg_b);
-    assert_eq!(loaded_probe_programs(&bpftool), PROGS);
+    assert_eq!(loaded_probe_programs(), PROGS);
 
     let cat_name = format!("ktcat{id}");
     let cat_bin = copy_bin("/bin/cat", &dir, &cat_name);
@@ -373,5 +360,5 @@ fn live_probe_reports_known_activity() {
     );
     assert_eq!(summary["by_kind"]["exec"], 2, "{summary}");
     assert_eq!(summary["by_kind"]["exit"], 2, "{summary}");
-    stop(s, &bpftool);
+    stop(s);
 }

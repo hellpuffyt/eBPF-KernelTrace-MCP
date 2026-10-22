@@ -151,10 +151,10 @@ See [LIMITATIONS.md](LIMITATIONS.md). The most important ones:
 The `live-kernel` job in `.github/workflows/ci.yml` runs on a GitHub-hosted `ubuntu-latest` VM, which has passwordless sudo and a BTF-enabled kernel. The job:
 1. builds the probe and the `live` binary;
 2. records `uname -a`, BTF and tracefs presence, lockdown state, capabilities, and the `--capabilities` report (unprivileged and as root);
-3. installs `bpftool` for the running kernel;
+3. lists loaded BPF programs through aya's `loaded_programs()` (the kernel's program-id iterator) to prove attach and detach, so no external tool is needed (`bpftool` is only an optional, non-gating diagnostic step);
 4. runs the ignored test `crates/kerneltrace-mcp/tests/live_kernel.rs` as root with `--ignored`.
 
-It has **not run yet**; this document will be updated with the real outcome. The test is never run on macOS. It fails, rather than skipping, if root, the probe object or `bpftool` is missing.
+Its first two runs (PR #5, kernels 7.0.0-1017-azure and 6.17.0-1022-azure) failed **before the probe was loaded**, because no runnable `bpftool` existed on those runners. That dependency has been removed. The kernel has **not been exercised yet**; this document will be updated with the real outcome. The test is never run on macOS. It fails, rather than skipping, if root or the probe object is missing.
 
 What the test asserts is listed at the top of `tests/live_kernel.rs`.
 
