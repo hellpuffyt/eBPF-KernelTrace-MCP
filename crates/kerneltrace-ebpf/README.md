@@ -2,7 +2,7 @@
 
 The in-kernel half of kerneltrace: three tracepoint programs (`kt_exec`, `kt_exit`, `kt_open`) that write fixed-layout `RawEvent` records into a BPF ring buffer named `EVENTS`.
 
-> **Unverified on hardware.** This crate builds and its object is checked by `crates/kerneltrace-core/tests/probe_object.rs`, but it has not been loaded into a running kernel by this project.
+> **Experimental.** Loaded and integration-tested on two kernels (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64) by `crates/kerneltrace-mcp/tests/live_kernel.rs`; other kernels are untested (see `docs/KERNEL_COMPAT.md`).
 
 ## Build
 

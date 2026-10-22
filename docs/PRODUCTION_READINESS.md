@@ -1,9 +1,9 @@
 # Production readiness
 
-**Tested commit:** `12a7252` (branch `docs/production-readiness`) · **Date:** 2026-10-22 · **Host:** Apple M5, 10 cores, 16 GB, macOS 27.0.1, rustc 1.98.0
+**Tested commits:** `12a7252` for the portable gates and clean clone (Apple M5, 10 cores, 16 GB, macOS 27.0.1, rustc 1.98.0); `04b4f6a` for the live-kernel test on two Linux kernels (see below) · **Date:** 2026-10-22
 
 **Proposed classification: Partially Verified.** This is a proposal backed by the evidence below; it is not a self-award.
-Reason: the userspace pipeline and MCP server are verified for their documented scope (synthetic mode, any OS). The **live eBPF path is not verified**. It needs Linux ≥ 5.8 with BTF and CAP_BPF, which was not available. CI has not yet run on this branch.
+Reason: the userspace pipeline and MCP server are verified for their documented scope (synthetic mode, any OS). The live eBPF path now passes its integration test on **two kernels and two architectures** (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64). Still unverified: live-mode overhead and loss under load, older kernels (5.8–6.7), and a third-party MCP client.
 
 ## Scope and architecture
 
@@ -130,31 +130,38 @@ Userspace only. Criterion micro-benchmarks plus an end-to-end example, measured 
 | 16 | Probe object matches loader | programs, map, global, license | `probe_object -- --ignored` | PASS | — | `probe_object.rs` |
 | 17 | Lint / docs / deps | clean | fmt, clippy (host and Linux), doc, deny, audit | PASS | all exit 0 | CI `lint`, `deny` |
 | 18 | MSRV 1.88 | builds | `cargo +1.88 check` | PASS | exit 0 (host) | CI `msrv` |
-| 19 | Live probe loads and attaches | programs attach to the 3 tracepoints; only enabled ones load | CI `live-kernel` → `tests/live_kernel.rs` | **Pending** (job exists, not yet run) | requires Linux ≥ 5.8 with BTF + CAP_BPF | `live.rs` |
-| 20 | Live events are correct | exec/exit/open events match real activity (pids, comms, paths, ordering, redaction); clean detach on SIGTERM | CI `live-kernel` → `tests/live_kernel.rs` | **Pending** (job exists, not yet run) | requires Linux ≥ 5.8 with BTF + CAP_BPF | `kerneltrace-ebpf` |
+| 19 | Live probe loads and attaches | programs attach to the 3 tracepoints; only enabled ones load | `tests/live_kernel.rs` (CI `live-kernel`; local arm64 container) | PASS | 7.0.0-1017-azure x86_64 and 6.8.0-117-generic aarch64; `kt_open` absent when open is off | `live.rs` |
+| 20 | Live events are correct | exec/exit/open events match real activity (pids, comms, paths, ordering, redaction); clean detach on SIGTERM | `tests/live_kernel.rs` (CI `live-kernel`; local arm64 container) | PASS | both kernels: exact pid/comm/path matches, exec < open < exit, `<redacted>` token path, `decode_errors` 0, no `kt_*` programs after SIGTERM | `kerneltrace-ebpf` |
 | 21 | Live-mode overhead and loss | measured kernel cost and drop rate | — | **Not verified** | requires Linux ≥ 5.8 with BTF + CAP_BPF; not covered by the CI job | — |
 | 22 | Third-party MCP client | works with a real desktop client | — | **Not verified** | no third-party client run | — |
-| 23 | CI green on this branch | all jobs pass | GitHub Actions | **Not yet run** | — | `.github/workflows/ci.yml` |
+| 23 | CI green on this branch | all jobs pass | GitHub Actions | **Partially recorded** | `live-kernel` passed on `04b4f6a` (PR #5); the other jobs' status on that commit is not recorded here | `.github/workflows/ci.yml` |
 
 ## Known limitations and unresolved risks
 
 See [LIMITATIONS.md](LIMITATIONS.md). The most important ones:
-- Live path unverified (items 19–21).
+- Live-mode overhead and loss under load are unmeasured (item 21). Only two kernels are verified (items 19–20).
 - Kernel-side ring-buffer drops are not counted; a counter is listed in [good-first-issues.md](good-first-issues.md) and is deliberately not implemented here.
 - 5 ms polling latency in live mode.
 - Fixed tracepoint offsets (no CO-RE).
 - MCP revision 2026-07-28 (stateless) not supported.
 - Benchmarks were taken under heavy unrelated load.
 
-## Live-kernel CI job (results pending)
+## Live-kernel verification
 
-The `live-kernel` job in `.github/workflows/ci.yml` runs on a GitHub-hosted `ubuntu-latest` VM, which has passwordless sudo and a BTF-enabled kernel. The job:
-1. builds the probe and the `live` binary;
-2. records `uname -a`, BTF and tracefs presence, lockdown state, capabilities, and the `--capabilities` report (unprivileged and as root);
-3. lists loaded BPF programs through aya's `loaded_programs()` (the kernel's program-id iterator) to prove attach and detach, so no external tool is needed (`bpftool` is only an optional, non-gating diagnostic step);
-4. runs the ignored test `crates/kerneltrace-mcp/tests/live_kernel.rs` as root with `--ignored`.
+The ignored test `crates/kerneltrace-mcp/tests/live_kernel.rs` runs as root with `--ignored`. It fails, rather than skipping, if root or the probe object is missing, and it never runs on macOS. It proves attach and detach by listing loaded BPF programs through aya's `loaded_programs()` (the kernel's program-id iterator), so no external tool is required.
 
-Its first two runs (PR #5, kernels 7.0.0-1017-azure and 6.17.0-1022-azure) failed **before the probe was loaded**, because no runnable `bpftool` existed on those runners. That dependency has been removed. The kernel has **not been exercised yet**; this document will be updated with the real outcome. The test is never run on macOS. It fails, rather than skipping, if root or the probe object is missing.
+| Kernel / arch | Where | Commit | Outcome |
+|---|---|---|---|
+| 7.0.0-1017-azure / x86_64 | CI job `live-kernel` on GitHub-hosted `ubuntu-latest` (PR #5) | `04b4f6a` | **PASS**, 1 passed. Run A: 2 records (exec+exit). Run B: 66 records, 1 redacted. `decode_errors` 0, `source_errors` 0, clean SIGTERM. Figures as reported from the CI log. |
+| 6.8.0-117-generic (Ubuntu 24.04) / aarch64 | local Colima VM (2 vCPU, 4 GB), privileged `rust:1.98-bookworm` container, `--pid=host`, tracefs mounted in the container | `04b4f6a` (clean clone) | **PASS**, 1 passed in 1.66 s. Run A: 2 records. Run B: 82 records, 2 redacted. `decode_errors` 0, `source_errors` 0, 0 queue drops, clean SIGTERM, no `kt_*` programs left. |
+
+aarch64 run details:
+- BTF 6,968,159 bytes, lockdown `[none]`, `unprivileged_bpf_disabled` = 2.
+- The tracepoint `format` files match the probe's fixed offsets (8; 24/32).
+- Probe built in the container with `nightly-2026-09-17` and bpf-linker 0.12.0 `aarch64-unknown-linux-musl` (sha256 `5e201e69…3935` verified); 5,008-byte object.
+- Command: `KERNELTRACE_EBPF_OBJECT=<obj> cargo test --features live --locked -p kerneltrace-mcp --test live_kernel -- --ignored --nocapture --test-threads=1`.
+
+Earlier CI attempts (kernels 7.0.0-1017-azure and 6.17.0-1022-azure) failed **before the probe was loaded**, because no runnable `bpftool` existed on those runners. Removing that dependency (`04b4f6a`) fixed it. No probe or loader defect has been found so far.
 
 What the test asserts is listed at the top of `tests/live_kernel.rs`.
 

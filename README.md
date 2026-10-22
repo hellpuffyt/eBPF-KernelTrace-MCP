@@ -6,7 +6,7 @@
 
 `kerneltrace-mcp` collects a small, documented set of kernel events (process exec, process exit, `openat`). It filters, samples, redacts and retains them under hard limits, then serves them to any MCP client over stdio. A deterministic **synthetic mode** runs the whole pipeline on any OS without privileges, so you can try it, test it and build on it before you go near a kernel.
 
-> **Status: experimental, 0.1.0. Not production-ready.** The userspace pipeline and MCP server are tested locally on macOS, and CI is configured to run the same suite on Linux, macOS and Windows. The eBPF probe **builds** and its object file is checked by tests, but it has **not yet been run against a live kernel** by this project (see [Limitations](#limitations--roadmap)).
+> **Status: experimental, 0.1.0. Not production-ready.** The userspace pipeline and MCP server are tested locally on macOS, and CI is configured to run the same suite on Linux, macOS and Windows. The live eBPF path passes an end-to-end integration test on two kernels (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64); see [docs/KERNEL_COMPAT.md](docs/KERNEL_COMPAT.md). Overhead under load has not been measured (see [Limitations](#limitations--roadmap)).
 
 ```console
 $ kerneltrace-mcp --seed 7 --rate 1000 --open --include-paths --dump 4
@@ -97,7 +97,7 @@ The synthetic stream includes paths such as `/home/alice/.ssh/id_ed25519` and `/
 - Protocol hardening: 1 MiB message cap, parse errors that don't kill the session, strict and bounded argument validation with field-level error messages, tools refused before `initialize`, and graceful shutdown on EOF, SIGINT/SIGTERM or EPIPE.
 - TOML configuration with unknown-key rejection and range validation.
 
-**Experimental (compiles; unverified on a live kernel)**
+**Experimental (integration-tested on 7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64 only)**
 - `kerneltrace-ebpf`: Aya tracepoint programs `kt_exec`, `kt_exit` and `kt_open` writing to a 256 KiB BPF ring buffer. Path reads are gated by a loader-set global.
 - `live` feature: loads the object, attaches only the enabled programs and drains the ring buffer.
 
@@ -200,7 +200,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 ## Limitations & roadmap
 
 The details are in [docs/LIMITATIONS.md](docs/LIMITATIONS.md). The main limits are:
-- The live path has not been run on a real kernel yet. Only the build and the object layout are verified.
+- The live path is integration-tested on two kernels only (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64). Overhead and loss under load are unmeasured.
 - Kernel-side ring-buffer overflow drops are **not counted**.
 - Tracepoint offsets are fixed (no CO-RE). `sys_enter_openat` layout changes would break `kt_open`.
 - Live polling sleeps 5 ms when the ring is empty, which adds up to 5 ms of latency.

@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 - `.editorconfig`, `docs/PRODUCTION_READINESS.md`.
+- Live-kernel integration test (`tests/live_kernel.rs`) and CI job `live-kernel`. It passes on 7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64: the first runs of the probe against real kernels.
 
 ## [0.1.0] - 2026-10-22
 

@@ -1,8 +1,8 @@
 //! Live kernel events from the eBPF probe (Linux only).
 //!
-//! **Status: experimental, unverified on real hardware by this project's
-//! maintainers at the time of writing.** The code compiles for Linux in CI;
-//! running it requires a kernel ≥ 5.8, tracefs, and CAP_BPF+CAP_PERFMON (or
+//! **Status: experimental.** Integration-tested on two kernels
+//! (7.0.0-1017-azure/x86_64, 6.8.0-117-generic/aarch64) by
+//! `kerneltrace-mcp/tests/live_kernel.rs`; running it requires a kernel ≥ 5.8, tracefs, and CAP_BPF+CAP_PERFMON (or
 //! root). See `docs/KERNEL_COMPAT.md`.
 //!
 //! # How data moves

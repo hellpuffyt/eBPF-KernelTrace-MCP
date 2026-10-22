@@ -10,7 +10,8 @@
 //! Tracepoint field offsets are the stable ones documented in each event's
 //! `format` file (see docs/KERNEL_COMPAT.md); this probe does not use BTF/CO-RE.
 //!
-//! **Status: unverified on real hardware.** CI only proves that it builds.
+//! **Status: experimental.** Integration-tested on 7.0.0-1017-azure/x86_64 and
+//! 6.8.0-117-generic/aarch64 (see docs/KERNEL_COMPAT.md).
 
 #![no_std]
 #![no_main]
