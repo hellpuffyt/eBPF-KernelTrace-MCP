@@ -1,0 +1,34 @@
+# Example kerneltrace-mcp configuration. Every key is optional; the values
+# shown are the defaults unless a comment says otherwise.
+
+# "synthetic" (no privileges, any OS) or "live" (Linux + eBPF + privileges).
+mode = "synthetic"
+
+[limits]
+queue_capacity = 4096        # reader -> store queue
+overflow = "drop_oldest"     # or "drop_newest"
+sample_every = 1             # keep 1 in N events
+max_events = 10000           # retention by count
+max_age_secs = 600           # retention by age (0 = off)
+max_query_limit = 500        # hard cap per query_events call
+
+[sources]
+exec = true
+exit = true
+open = false                 # high volume; reveals file activity
+include_paths = false        # SENSITIVE: exec filenames and opened paths
+
+[redaction]
+# Applied only when include_paths = true.
+path_prefixes = ["/home", "/root", "/Users"]
+substrings = [".ssh", ".gnupg", ".aws", ".env", "secret", "token", "password", "credential", "id_rsa", "id_ed25519"]
+
+[synthetic]
+seed = 42
+rate_per_sec = 200           # 0 = as fast as possible
+malformed_every = 0          # inject a truncated record every N (testing)
+
+[live]
+# Path to the compiled probe, e.g. as built in
+# crates/kerneltrace-ebpf (see docs/KERNEL_COMPAT.md).
+# ebpf_object = "crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf"

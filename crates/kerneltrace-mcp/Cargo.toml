@@ -1,0 +1,27 @@
+[package]
+name = "kerneltrace-mcp"
+description = "Model Context Protocol server exposing permission-controlled kernel telemetry (eBPF on Linux, synthetic everywhere)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ebpf", "mcp", "observability", "tracing", "linux"]
+categories = ["development-tools::debugging", "command-line-utilities"]
+
+[features]
+default = []
+# Enable the Linux eBPF live source.
+live = ["kerneltrace-core/live"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+kerneltrace-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

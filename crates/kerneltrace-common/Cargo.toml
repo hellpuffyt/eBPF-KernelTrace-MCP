@@ -1,0 +1,11 @@
+[package]
+name = "kerneltrace-common"
+description = "C-layout event records shared by the kerneltrace eBPF probe and its userspace consumer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
