@@ -2,81 +2,14 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test harness: panics are the failure signal
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+mod common;
+
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use common::{BIN, Session};
 use serde_json::{Value, json};
-
-const BIN: &str = env!("CARGO_BIN_EXE_kerneltrace-mcp");
-
-struct Session {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
-    next_id: u64,
-}
-
-impl Session {
-    fn start(args: &[&str]) -> Self {
-        let mut child = Command::new(BIN)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn kerneltrace-mcp");
-        let stdin = child.stdin.take();
-        let stdout = BufReader::new(child.stdout.take().expect("stdout"));
-        Self {
-            child,
-            stdin,
-            stdout,
-            next_id: 1,
-        }
-    }
-
-    fn send(&mut self, v: &Value) {
-        let stdin = self.stdin.as_mut().expect("stdin open");
-        writeln!(stdin, "{v}").expect("write");
-        stdin.flush().expect("flush");
-    }
-
-    fn read(&mut self) -> Value {
-        let mut line = String::new();
-        self.stdout.read_line(&mut line).expect("read");
-        serde_json::from_str(&line).unwrap_or_else(|e| panic!("bad response {line:?}: {e}"))
-    }
-
-    fn request(&mut self, method: &str, params: Value) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
-        let r = self.read();
-        assert_eq!(r["id"], id, "response id matches request");
-        r
-    }
-
-    fn tool(&mut self, name: &str, args: Value) -> Value {
-        let r = self.request("tools/call", json!({ "name": name, "arguments": args }));
-        assert_eq!(r["result"]["isError"], false, "{r}");
-        r["result"]["structuredContent"].clone()
-    }
-
-    fn wait_exit(mut self) -> std::process::ExitStatus {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if let Some(status) = self.child.try_wait().expect("try_wait") {
-                return status;
-            }
-            if Instant::now() > deadline {
-                let _ = self.child.kill();
-                panic!("server did not exit");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-}
 
 fn initialize(s: &mut Session) -> Value {
     let r = s.request(
@@ -315,4 +248,48 @@ fn invalid_config_is_reported() {
     std::fs::remove_dir_all(&dir).ok();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("queue_capacity"));
+}
+
+#[test]
+fn legacy_revisions_over_stdio() {
+    // 2025-06-18: invalid arguments are JSON-RPC errors; no batches.
+    let mut s = Session::start(&["--rate", "1000"]);
+    let init = s.request(
+        "initialize",
+        json!({ "protocolVersion": "2025-06-18", "capabilities": {} }),
+    );
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+    let bad = s.request(
+        "tools/call",
+        json!({ "name": "query_events", "arguments": { "limit": -5 } }),
+    );
+    assert_eq!(bad["error"]["code"], -32602);
+    assert!(
+        bad["error"]["message"]
+            .as_str()
+            .expect("msg")
+            .contains("`limit`"),
+        "{bad}"
+    );
+    drop(s.stdin.take());
+    assert!(s.wait_exit().success());
+
+    // 2025-03-26: batches must be accepted; no structuredContent in results.
+    let mut s = Session::start(&["--rate", "1000"]);
+    s.request(
+        "initialize",
+        json!({ "protocolVersion": "2025-03-26", "capabilities": {} }),
+    );
+    s.send(&json!([
+        { "jsonrpc": "2.0", "id": 10, "method": "ping" },
+        { "jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": { "name": "stats" } }
+    ]));
+    let batch = s.read();
+    let arr = batch.as_array().expect("batch response");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["id"], 10);
+    assert_eq!(arr[1]["result"]["isError"], false);
+    assert!(arr[1]["result"].get("structuredContent").is_none());
+    drop(s.stdin.take());
+    assert!(s.wait_exit().success());
 }

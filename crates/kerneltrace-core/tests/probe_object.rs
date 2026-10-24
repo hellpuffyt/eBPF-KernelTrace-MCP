@@ -5,9 +5,12 @@
 //!
 //! The object must be built first (nightly + bpf-linker, see
 //! crates/kerneltrace-ebpf/README.md) and passed in `KERNELTRACE_EBPF_OBJECT`.
-//! CI's `ebpf` job does this. Without the variable the test reports that it
-//! did not run and passes.
+//! CI's `ebpf` job does this. The test is `#[ignore]`d by default so a plain
+//! `cargo test` reports it as *ignored*, never as passed; run it with
+//! `-- --ignored`. With `--ignored` but no object, it fails instead of
+//! silently passing. Unix-only, because `aya-obj` does not build on Windows.
 
+#![cfg(unix)]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use aya_obj::Object;
@@ -17,11 +20,11 @@ use kerneltrace_core::live::{INCLUDE_PATHS_GLOBAL, PROGRAMS, RING_MAP};
 const BPF_MAP_TYPE_RINGBUF: u32 = 27;
 
 #[test]
+#[ignore = "needs the compiled probe: set KERNELTRACE_EBPF_OBJECT and pass --ignored"]
 fn probe_object_matches_loader_expectations() {
-    let Some(path) = std::env::var_os("KERNELTRACE_EBPF_OBJECT") else {
-        eprintln!("NOT RUN: set KERNELTRACE_EBPF_OBJECT to the compiled probe to check it");
-        return;
-    };
+    let path = std::env::var_os("KERNELTRACE_EBPF_OBJECT").expect(
+        "set KERNELTRACE_EBPF_OBJECT to the compiled probe (see crates/kerneltrace-ebpf/README.md)",
+    );
     let bytes = std::fs::read(&path).expect("read probe object");
     let obj = Object::parse(&bytes).expect("aya-obj parses the probe");
 

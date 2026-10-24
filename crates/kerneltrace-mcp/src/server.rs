@@ -1,20 +1,26 @@
 //! MCP request dispatch.
 
 use kerneltrace_core::{Config, Engine};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use crate::protocol::{self, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR};
+use crate::protocol::{
+    self, Features, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
+};
 use crate::tools::{self, CallError};
 
 const INSTRUCTIONS: &str = "Read-only kernel telemetry. Call `capabilities` first to learn whether events are \
 live or synthetic and which fields are collected. Use `summarize_events` for an overview and `query_events` \
 with filters for detail. Paths are omitted or redacted unless the operator enabled them.";
 
+/// Maximum messages in one JSON-RPC batch (only accepted on revisions that allow batches).
+pub const MAX_BATCH: usize = 64;
+
 /// Protocol state for one client connection.
 pub struct Server<'a> {
     engine: &'a Engine,
     collection: Value,
-    initialized: bool,
+    /// Revision agreed in `initialize`; `None` until then.
+    version: Option<&'static str>,
 }
 
 impl<'a> Server<'a> {
@@ -32,225 +38,194 @@ impl<'a> Server<'a> {
         Self {
             engine,
             collection,
-            initialized: false,
+            version: None,
         }
     }
 
-    /// Whether `initialize` has been answered.
+    /// The negotiated protocol revision, once `initialize` has been answered.
     #[cfg(test)]
-    pub fn is_initialized(&self) -> bool {
-        self.initialized
+    pub fn version(&self) -> Option<&'static str> {
+        self.version
     }
 
-    /// Handles one JSON-RPC message. Returns the response line, or `None` for notifications.
+    /// Handles one line (a JSON-RPC message or, where allowed, a batch).
+    /// Returns the response, or `None` when nothing must be sent.
     pub fn handle_line(&mut self, line: &str) -> Option<Value> {
-        let msg: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                return Some(protocol::error(
-                    &Value::Null,
-                    PARSE_ERROR,
-                    format!("parse error: {e}"),
-                ));
-            }
-        };
-        let Some(obj) = msg.as_object() else {
-            // JSON-RPC batches were removed from MCP in 2025-06-18.
+        match serde_json::from_str::<Value>(line) {
+            Ok(Value::Array(items)) => self.handle_batch(items),
+            Ok(msg) => self.handle_message(&msg, false),
+            Err(e) => Some(protocol::error(
+                &Value::Null,
+                PARSE_ERROR,
+                format!("parse error: {e}"),
+            )),
+        }
+    }
+
+    fn handle_batch(&mut self, items: Vec<Value>) -> Option<Value> {
+        let batches = self
+            .version
+            .map(protocol::features)
+            .is_some_and(|f| f.batches);
+        if !batches {
+            let why = match self.version {
+                Some(v) => format!("JSON-RPC batches are not supported in protocol version {v}"),
+                None => "JSON-RPC batches are not accepted before initialize".to_string(),
+            };
+            return Some(protocol::error(&Value::Null, INVALID_REQUEST, why));
+        }
+        if items.is_empty() {
             return Some(protocol::error(
                 &Value::Null,
                 INVALID_REQUEST,
-                "expected a single JSON-RPC object",
+                "empty batch",
+            ));
+        }
+        if items.len() > MAX_BATCH {
+            return Some(protocol::error(
+                &Value::Null,
+                INVALID_REQUEST,
+                format!(
+                    "batch of {} messages exceeds the limit of {MAX_BATCH}",
+                    items.len()
+                ),
+            ));
+        }
+        let responses: Vec<Value> = items
+            .iter()
+            .filter_map(|m| self.handle_message(m, true))
+            .collect();
+        (!responses.is_empty()).then_some(Value::Array(responses))
+    }
+
+    fn handle_message(&mut self, msg: &Value, in_batch: bool) -> Option<Value> {
+        let Some(obj) = msg.as_object() else {
+            return Some(protocol::error(
+                &Value::Null,
+                INVALID_REQUEST,
+                "expected a JSON-RPC object",
             ));
         };
         let id = obj.get("id").cloned();
-        let method = obj.get("method").and_then(Value::as_str);
         if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-            return id.map(|id| protocol::error(&id, INVALID_REQUEST, "jsonrpc must be \"2.0\""));
+            return Some(protocol::error(
+                &id.unwrap_or(Value::Null),
+                INVALID_REQUEST,
+                "jsonrpc must be \"2.0\"",
+            ));
         }
-        let Some(method) = method else {
-            // A response from the client (we never send requests) or garbage.
+        let Some(method) = obj.get("method").and_then(Value::as_str) else {
+            // A response from the client (we never send requests): ignore.
             return None;
         };
-        let Some(id) = id else {
-            // Notification (e.g. notifications/initialized, notifications/cancelled).
-            return None;
-        };
-        let params = obj.get("params");
-        Some(self.dispatch(&id, method, params))
+        // Notifications (e.g. notifications/initialized) need no response.
+        let id = id?;
+        if !(id.is_string() || id.is_i64() || id.is_u64()) {
+            return Some(protocol::error(
+                &Value::Null,
+                INVALID_REQUEST,
+                "id must be a string or an integer",
+            ));
+        }
+        if in_batch && method == "initialize" {
+            return Some(protocol::error(
+                &id,
+                INVALID_REQUEST,
+                "initialize must not be part of a batch",
+            ));
+        }
+        Some(self.dispatch(&id, method, obj.get("params")))
     }
 
     fn dispatch(&mut self, id: &Value, method: &str, params: Option<&Value>) -> Value {
         match method {
-            "initialize" => {
-                let requested = params
-                    .and_then(|p| p.get("protocolVersion"))
-                    .and_then(Value::as_str);
-                self.initialized = true;
-                protocol::result(
-                    id,
-                    json!({
-                        "protocolVersion": protocol::negotiate(requested),
-                        "capabilities": { "tools": { "listChanged": false } },
-                        "serverInfo": { "name": "kerneltrace-mcp", "title": "eBPF KernelTrace MCP", "version": env!("CARGO_PKG_VERSION") },
-                        "instructions": INSTRUCTIONS,
-                    }),
-                )
-            }
+            "initialize" => self.initialize(id, params),
             "ping" => protocol::result(id, json!({})),
-            "tools/list" => protocol::result(id, tools::list(self.engine.max_query_limit())),
-            "tools/call" => {
-                let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
-                    return protocol::error(id, INVALID_PARAMS, "tools/call requires params.name");
+            "tools/list" | "tools/call" => {
+                let Some(version) = self.version else {
+                    return protocol::error(
+                        id,
+                        INVALID_REQUEST,
+                        format!("server not initialized: send initialize before {method}"),
+                    );
                 };
-                let args = params.and_then(|p| p.get("arguments"));
-                match tools::call(self.engine, &self.collection, name, args) {
-                    Ok(structured) => protocol::result(
-                        id,
-                        json!({
-                            "content": [{ "type": "text", "text": structured.to_string() }],
-                            "structuredContent": structured,
-                            "isError": false,
-                        }),
-                    ),
-                    Err(CallError::Tool(msg)) => protocol::result(
-                        id,
-                        json!({ "content": [{ "type": "text", "text": msg }], "isError": true }),
-                    ),
-                    Err(CallError::UnknownTool(name)) => {
-                        protocol::error(id, INVALID_PARAMS, format!("unknown tool: {name}"))
-                    }
+                let f = protocol::features(version);
+                if method == "tools/list" {
+                    protocol::result(id, tools::list(self.engine.max_query_limit(), f))
+                } else {
+                    self.call_tool(id, params, f)
                 }
             }
             other => protocol::error(id, METHOD_NOT_FOUND, format!("method not found: {other}")),
         }
     }
+
+    fn initialize(&mut self, id: &Value, params: Option<&Value>) -> Value {
+        let requested = params
+            .and_then(|p| p.get("protocolVersion"))
+            .and_then(Value::as_str);
+        let version = protocol::negotiate(requested);
+        self.version = Some(version);
+        let mut info = json!({ "name": "kerneltrace-mcp", "version": env!("CARGO_PKG_VERSION") });
+        if protocol::features(version).titles_and_structured_content {
+            info["title"] = json!("eBPF KernelTrace MCP");
+        }
+        protocol::result(
+            id,
+            json!({
+                "protocolVersion": version,
+                "capabilities": { "tools": { "listChanged": false } },
+                "serverInfo": info,
+                "instructions": INSTRUCTIONS,
+            }),
+        )
+    }
+
+    fn call_tool(&self, id: &Value, params: Option<&Value>, f: Features) -> Value {
+        let Some(params) = params.and_then(Value::as_object) else {
+            return protocol::error(id, INVALID_PARAMS, "tools/call requires a params object");
+        };
+        let Some(name) = params.get("name").and_then(Value::as_str) else {
+            return protocol::error(
+                id,
+                INVALID_PARAMS,
+                "tools/call requires params.name (a string)",
+            );
+        };
+        let tool_error = |msg: String| {
+            protocol::result(
+                id,
+                json!({ "content": [{ "type": "text", "text": msg }], "isError": true }),
+            )
+        };
+        match tools::call(self.engine, &self.collection, name, params.get("arguments")) {
+            Ok(structured) => {
+                let mut r = Map::new();
+                r.insert(
+                    "content".into(),
+                    json!([{ "type": "text", "text": structured.to_string() }]),
+                );
+                if f.titles_and_structured_content {
+                    r.insert("structuredContent".into(), structured);
+                }
+                r.insert("isError".into(), json!(false));
+                protocol::result(id, Value::Object(r))
+            }
+            Err(CallError::UnknownTool(name)) => protocol::error(
+                id,
+                INVALID_PARAMS,
+                format!(
+                    "unknown tool: {name} (available: {})",
+                    tools::TOOL_NAMES.join(", ")
+                ),
+            ),
+            Err(CallError::InvalidArgs(msg)) if f.validation_as_tool_error => tool_error(msg),
+            Err(CallError::InvalidArgs(msg)) => protocol::error(id, INVALID_PARAMS, msg),
+            Err(CallError::Failed(msg)) => tool_error(msg),
+        }
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use kerneltrace_core::{Pacing, SyntheticSource};
-
-    fn with_server(f: impl FnOnce(&mut Server<'_>)) {
-        let mut cfg = Config::default();
-        cfg.sources.open = true;
-        let mut engine = Engine::start(
-            &cfg,
-            Box::new(SyntheticSource::new(1, 1000, 0)),
-            Pacing::Unpaced,
-        )
-        .expect("engine");
-        while engine.stats().stored < 200 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        let mut srv = Server::new(&engine, &cfg);
-        f(&mut srv);
-        engine.shutdown();
-    }
-
-    fn call(srv: &mut Server<'_>, line: &str) -> Value {
-        srv.handle_line(line).expect("response")
-    }
-
-    #[test]
-    fn negotiates_versions() {
-        with_server(|s| {
-            let r = call(
-                s,
-                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
-            );
-            assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
-            assert!(s.is_initialized());
-            let r = call(
-                s,
-                r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#,
-            );
-            assert_eq!(
-                r["result"]["protocolVersion"],
-                protocol::SUPPORTED_VERSIONS[0]
-            );
-        });
-    }
-
-    #[test]
-    fn protocol_errors() {
-        with_server(|s| {
-            assert_eq!(call(s, "{not json")["error"]["code"], PARSE_ERROR);
-            assert_eq!(call(s, "[1,2]")["error"]["code"], INVALID_REQUEST);
-            assert_eq!(
-                call(s, r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#)["error"]["code"],
-                INVALID_REQUEST
-            );
-            assert_eq!(
-                call(s, r#"{"jsonrpc":"2.0","id":1,"method":"nope"}"#)["error"]["code"],
-                METHOD_NOT_FOUND
-            );
-            assert_eq!(
-                call(
-                    s,
-                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rm_rf"}}"#
-                )["error"]["code"],
-                INVALID_PARAMS
-            );
-            assert!(
-                s.handle_line(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
-                    .is_none()
-            );
-        });
-    }
-
-    #[test]
-    fn tool_argument_errors_are_tool_errors() {
-        with_server(|s| {
-            let bad_limit = call(
-                s,
-                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_events","arguments":{"limit":100000}}}"#,
-            );
-            assert_eq!(bad_limit["result"]["isError"], true);
-            let unknown_field = call(
-                s,
-                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_events","arguments":{"pid":1}}}"#,
-            );
-            assert_eq!(unknown_field["result"]["isError"], true);
-            let bad_kind = call(
-                s,
-                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_events","arguments":{"kinds":["fork"]}}}"#,
-            );
-            assert_eq!(bad_kind["result"]["isError"], true);
-        });
-    }
-
-    #[test]
-    fn query_and_summarize() {
-        with_server(|s| {
-            let q = call(
-                s,
-                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_events","arguments":{"kinds":["open"],"limit":5}}}"#,
-            );
-            let sc = &q["result"]["structuredContent"];
-            assert_eq!(sc["returned"], 5);
-            assert!(
-                sc["events"]
-                    .as_array()
-                    .expect("array")
-                    .iter()
-                    .all(|e| e["kind"] == "open")
-            );
-            let sm = call(
-                s,
-                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"summarize_events","arguments":{"top_n":3}}}"#,
-            );
-            assert!(
-                sm["result"]["structuredContent"]["total"]
-                    .as_u64()
-                    .expect("total")
-                    >= 200
-            );
-            let st = call(
-                s,
-                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"stats"}}"#,
-            );
-            assert_eq!(st["result"]["structuredContent"]["source"], "synthetic");
-        });
-    }
-}
+#[path = "server_tests.rs"]
+mod tests;

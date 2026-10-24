@@ -23,11 +23,14 @@ toml.workspace = true
 aya = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Parses the compiled probe in tests/probe_object.rs (portable, no kernel needed).
-aya-obj = "0.3.0"
 criterion.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
+
+# Parses the compiled probe in tests/probe_object.rs (no kernel needed). Unix-only:
+# aya-obj uses `std::os::fd`, which does not exist on Windows.
+[target.'cfg(unix)'.dev-dependencies]
+aya-obj = "0.3.0"
 
 [[bench]]
 name = "pipeline"
