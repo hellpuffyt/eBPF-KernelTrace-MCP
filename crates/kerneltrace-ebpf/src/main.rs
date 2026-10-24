@@ -1,17 +1,25 @@
 //! kerneltrace eBPF probe: three tracepoint programs that write
 //! [`RawEvent`] records into the `EVENTS` ring buffer.
 //!
-//! | Program   | Tracepoint                      | Path captured (if enabled)       |
-//! |-----------|---------------------------------|----------------------------------|
-//! | `kt_exec` | `sched:sched_process_exec`      | executed filename (kernel string)|
-//! | `kt_exit` | `sched:sched_process_exit`      | none                             |
-//! | `kt_open` | `syscalls:sys_enter_openat`     | `filename` argument (user string)|
+//! | Program   | Hook                                   | Path captured (if enabled)       |
+//! |-----------|----------------------------------------|----------------------------------|
+//! | `kt_exec` | tracepoint `sched:sched_process_exec`  | executed filename (kernel string)|
+//! | `kt_exit` | tracepoint `sched:sched_process_exit`  | none                             |
+//! | `kt_open` | raw tracepoint `sys_enter`, `openat`   | `filename` argument (user string)|
 //!
 //! Tracepoint field offsets are the stable ones documented in each event's
 //! `format` file (see docs/KERNEL_COMPAT.md); this probe does not use BTF/CO-RE.
 //!
-//! **Status: experimental.** Integration-tested on 7.0.0-1017-azure/x86_64 and
-//! 6.8.0-117-generic/aarch64 (see docs/KERNEL_COMPAT.md).
+//! `kt_open` is a raw tracepoint on `sys_enter` rather than a perf-attached
+//! `syscalls:sys_enter_openat` program: some kernels (the 7.0.y backport of
+//! "tracing: perf: Fix stale head for perf syscall tracing", e.g.
+//! 7.0.0-1017-azure) skip BPF programs on `sys_enter_*` events whose syscall
+//! reads user memory unless a perf event exists on the *current* CPU, and a
+//! tracepoint attachment has a perf event on CPU 0 only. Opens on every other
+//! CPU were then never seen. The raw tracepoint does not go through that path.
+//!
+//! **Status: experimental.** See docs/KERNEL_COMPAT.md for the kernels the
+//! live-kernel test has passed on.
 
 #![no_std]
 #![no_main]
@@ -19,11 +27,11 @@
 use aya_ebpf::EbpfContext;
 use aya_ebpf::helpers::{
     bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns,
-    bpf_probe_read_kernel_str_bytes, bpf_probe_read_user_str_bytes,
+    bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes, bpf_probe_read_user_str_bytes,
 };
-use aya_ebpf::macros::{map, tracepoint};
+use aya_ebpf::macros::{map, raw_tracepoint, tracepoint};
 use aya_ebpf::maps::{PerCpuArray, RingBuf};
-use aya_ebpf::programs::TracePointContext;
+use aya_ebpf::programs::{RawTracePointContext, TracePointContext};
 use kerneltrace_common::{
     KIND_EXEC, KIND_EXIT, KIND_OPEN, PATH_LEN, RawEvent, STAT_FIRED_EXEC, STAT_FIRED_EXIT,
     STAT_FIRED_OPEN, STAT_PATH_UNREADABLE, STAT_RING_FULL, STAT_SLOTS,
@@ -43,16 +51,40 @@ static STATS: PerCpuArray<u64> = PerCpuArray::with_max_entries(STAT_SLOTS, 0);
 #[unsafe(no_mangle)]
 static INCLUDE_PATHS: u8 = 0;
 
+// Host syscall ABI for `kt_open`, written by the loader from
+// `kerneltrace_common::SyscallAbi` (see there). The defaults never match a
+// syscall, so an object loaded without them reports no open events.
+#[unsafe(no_mangle)]
+static OPEN_SYSCALL_NR: u64 = u64::MAX;
+#[unsafe(no_mangle)]
+static OPEN_PATH_OFF: u64 = 0;
+#[unsafe(no_mangle)]
+static OPEN_FLAGS_OFF: u64 = 0;
+#[unsafe(no_mangle)]
+static OPEN_MODE_OFF: u64 = 0;
+#[unsafe(no_mangle)]
+static OPEN_MODE_MASK: u64 = 0;
+#[unsafe(no_mangle)]
+static OPEN_MODE_WANT: u64 = 1;
+
 // `sched_process_exec`: `__data_loc char[] filename` at offset 8.
 const EXEC_FILENAME_LOC: usize = 8;
-// `sys_enter_openat`: `const char *filename` at 24, `int flags` at 32 (8-byte slots).
-const OPENAT_FILENAME: usize = 24;
-const OPENAT_FLAGS: usize = 32;
 
 fn include_paths() -> bool {
     // SAFETY: reading a plain static; volatile so the loader-patched value is
     // not constant-folded away.
     unsafe { core::ptr::read_volatile(&INCLUDE_PATHS) != 0 }
+}
+
+fn global(v: &u64) -> u64 {
+    // SAFETY: as in `include_paths`.
+    unsafe { core::ptr::read_volatile(v) }
+}
+
+/// Reads the `u64` at byte offset `off` of the kernel `struct pt_regs` at `regs`.
+fn reg(regs: u64, off: u64) -> Option<u64> {
+    // SAFETY: the helper validates the kernel pointer and faults safely.
+    unsafe { bpf_probe_read_kernel((regs + off) as *const u64) }.ok()
 }
 
 fn bump(slot: u32) {
@@ -127,12 +159,23 @@ pub fn kt_exit(_ctx: TracePointContext) -> u32 {
     0
 }
 
-#[tracepoint]
-pub fn kt_open(ctx: TracePointContext) -> u32 {
-    // SAFETY: offsets taken from the tracepoint's format file.
-    let flags = unsafe { ctx.read_at::<i64>(OPENAT_FLAGS) }.unwrap_or(0);
+/// Raw `sys_enter(struct pt_regs *regs, long id)`: runs for every syscall on
+/// every CPU; everything but native `openat` returns before touching a map.
+#[raw_tracepoint(tracepoint = "sys_enter")]
+pub fn kt_open(ctx: RawTracePointContext) -> i32 {
+    let regs: u64 = ctx.arg(0);
+    let id: u64 = ctx.arg(1);
+    if id != global(&OPEN_SYSCALL_NR) {
+        return 0;
+    }
+    match reg(regs, global(&OPEN_MODE_OFF)) {
+        Some(mode) if mode & global(&OPEN_MODE_MASK) == global(&OPEN_MODE_WANT) => {}
+        _ => return 0,
+    }
+    // The whole register, as the `sys_enter_openat` record's 8-byte slot held it.
+    let flags = reg(regs, global(&OPEN_FLAGS_OFF)).map_or(0, |v| v as i64);
     emit(KIND_OPEN, flags, |path| {
-        let Ok(ptr) = (unsafe { ctx.read_at::<u64>(OPENAT_FILENAME) }) else {
+        let Some(ptr) = reg(regs, global(&OPEN_PATH_OFF)) else {
             bump(STAT_PATH_UNREADABLE);
             return 0;
         };

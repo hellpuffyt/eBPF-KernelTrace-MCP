@@ -16,6 +16,9 @@
 //! - **B, `open` + `include_paths`**: a uniquely named copy of `cat` reads a
 //!   unique file (path must be reported verbatim) and a file whose name
 //!   contains `token` (path must be `<redacted>`); exec carries the binary path.
+//!   Then the same `cat` copy is pinned (`taskset`) to every online CPU in
+//!   turn and each CPU's open must arrive: on some kernels a program attached
+//!   to `syscalls:sys_enter_openat` through perf ran on CPU 0 only.
 //!
 //! - **C, flood with a one-page ring buffer**: a bounded pool of threads runs
 //!   2000 short-lived processes (no fork bomb: at most 8 at a time). The
@@ -161,6 +164,29 @@ fn events_for(s: &mut Session, pid: u32, kinds: &[&str]) -> Vec<Value> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Like [`events_for`], then waits a little longer so an open event that
+/// is merely slow is not reported as missing.
+fn events_for_or_timeout(s: &mut Session, pid: u32, kinds: &[&str]) -> Vec<Value> {
+    events_for(s, pid, kinds);
+    std::thread::sleep(Duration::from_millis(300));
+    let r = s.tool("query_events", json!({ "pids": [pid], "limit": 500 }));
+    r["events"].as_array().expect("events").clone()
+}
+
+/// CPU ids from `/sys/devices/system/cpu/online` (e.g. `0-3` or `0,2-5`).
+fn online_cpus() -> Vec<u32> {
+    let list = std::fs::read_to_string("/sys/devices/system/cpu/online").expect("cpu/online");
+    let mut cpus = Vec::new();
+    for part in list.trim().split(',') {
+        match part.split_once('-') {
+            Some((a, b)) => cpus.extend(a.parse::<u32>().unwrap()..=b.parse::<u32>().unwrap()),
+            None => cpus.push(part.parse().unwrap()),
+        }
+    }
+    assert!(!cpus.is_empty(), "no online CPUs in {list:?}");
+    cpus
 }
 
 fn one<'a>(events: &'a [Value], kind: &str) -> &'a Value {
@@ -415,6 +441,40 @@ fn live_probe_reports_known_activity() {
     );
     assert_eq!(summary["by_kind"]["exec"], 2, "{summary}");
     assert_eq!(summary["by_kind"]["exit"], 2, "{summary}");
+
+    // Every CPU, not just the one the scheduler happened to pick: an open on
+    // any CPU must reach the probe.
+    let cpus = online_cpus();
+    eprintln!("online cpus: {cpus:?}");
+    let mut missing = Vec::new();
+    for cpu in &cpus {
+        let file = dir.join(format!("cpu{cpu}-{id}.txt"));
+        std::fs::write(&file, "x").expect("write");
+        // taskset sets the affinity and execs the cat copy (same pid).
+        let child = Command::new("taskset")
+            .arg("-c")
+            .arg(cpu.to_string())
+            .arg(&cat_bin)
+            .arg(&file)
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("spawn taskset (util-linux)");
+        let pid = child.id();
+        assert!(child.wait_with_output().expect("wait").status.success());
+        let ev = events_for_or_timeout(&mut s, pid, &["exec", "exit"]);
+        let file_s = file.to_str().expect("utf8");
+        if !ev
+            .iter()
+            .any(|e| e["kind"] == "open" && e["path"] == file_s)
+        {
+            missing.push(*cpu);
+        }
+    }
+    let stats = s.tool("stats", json!({}));
+    assert!(
+        missing.is_empty(),
+        "openat on CPUs {missing:?} (of {cpus:?}) never reached kt_open: {stats}"
+    );
     stop(s);
 
     // ---- Run C: flood with a one-page ring buffer ----
