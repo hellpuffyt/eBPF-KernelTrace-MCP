@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1]
     name: live shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -87,14 +87,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel: ["v7.0", "azure-7.0.0-1017", "azure-7.0.0-1017-b"]
+        kernel: ["v7.0", "azure-7.0.0-1017"]
     name: vm ${{ matrix.kernel }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
       BPF_LINKER_VERSION: v0.12.0
       BPF_LINKER_SHA256: 6789717c8cb6a2a5d920f3b6bfac2bd7efc00f6228ecd149108a99699a75c679
-      ITER: "25"
+      ITER: "5"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -166,6 +166,7 @@ jobs:
           done
           echo "LOOP_RESULT kernel=\$(uname -r) pass=\$pass fail=\$fail"
           for i in 1 2 3; do "$LIVE_TEST_BIN" --ignored --nocapture --test-threads=1 --exact diag_open_delivery 2>&1 | grep -E "^DIAG|panicked" | cut -c1-5000; done
+          for i in 1 2 3; do DIAG_PIN=1 "$LIVE_TEST_BIN" --ignored --nocapture --test-threads=1 --exact diag_open_delivery 2>&1 | grep -E "^DIAG|panicked" | cut -c1-6000; done
           dmesg | grep -iE "too many tries|WARN|bpf" | tail -10
           EOS
           chmod +x guest.sh

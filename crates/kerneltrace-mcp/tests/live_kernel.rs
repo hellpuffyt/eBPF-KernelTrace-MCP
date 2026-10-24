@@ -547,23 +547,41 @@ fn diag_open_delivery() {
     let t0 = Instant::now();
     let stats0 = s.tool("stats", json!({}));
     let mut runs = Vec::new();
-    for f in &files {
+    let pin = std::env::var("DIAG_PIN").is_ok();
+    let ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    for (i, f) in files.iter().enumerate() {
         let t = t0.elapsed().as_millis() as u64;
-        let child = Command::new(&cat_bin)
-            .arg(f)
-            .stdout(Stdio::null())
-            .spawn()
-            .expect("spawn");
+        let cpu = i % ncpu;
+        let child = if pin {
+            // taskset execs the cat copy on the given CPU (same pid).
+            Command::new("taskset")
+                .arg("-c")
+                .arg(cpu.to_string())
+                .arg(&cat_bin)
+                .arg(f)
+                .stdout(Stdio::null())
+                .spawn()
+                .expect("spawn")
+        } else {
+            Command::new(&cat_bin)
+                .arg(f)
+                .stdout(Stdio::null())
+                .spawn()
+                .expect("spawn")
+        };
         let pid = child.id();
         child.wait_with_output().expect("wait");
-        runs.push((t, pid, f.clone()));
+        runs.push((t, pid, f.clone(), cpu));
         std::thread::sleep(Duration::from_millis(50));
     }
     std::thread::sleep(Duration::from_millis(1500));
     let stats = s.tool("stats", json!({}));
     let mut rows = Vec::new();
     let mut missing = 0;
-    for (t, pid, f) in &runs {
+    let mut missing_by_cpu = vec![0u32; ncpu];
+    let mut runs_by_cpu = vec![0u32; ncpu];
+    for (t, pid, f, cpu) in &runs {
+        runs_by_cpu[*cpu] += 1;
         let r = s.tool("query_events", json!({ "pids": [pid], "limit": 500 }));
         let ev = r["events"].as_array().expect("events");
         let has = |k: &str| ev.iter().any(|e| e["kind"] == k);
@@ -573,8 +591,9 @@ fn diag_open_delivery() {
             .any(|e| e["kind"] == "open" && e["path"] == f.to_str().unwrap());
         if !target {
             missing += 1;
+            missing_by_cpu[*cpu] += 1;
         }
-        rows.push(json!({"t_ms": t, "exec": has("exec"), "opens": opens, "target": target, "exit": has("exit")}));
+        rows.push(json!({"cpu": if pin { json!(cpu) } else { Value::Null }, "t_ms": t, "exec": has("exec"), "opens": opens, "target": target, "exit": has("exit")}));
     }
     let all = s.tool("query_events", json!({ "limit": 500, "kinds": ["open"] }));
     let n_open_all = all["events"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -586,6 +605,9 @@ fn diag_open_delivery() {
                "stats0": stats0["kernel"], "stats": stats, "rows": rows})
     );
     eprintln!("DIAG_SUMMARY missing_target={missing}/{}", runs.len());
+    if pin {
+        eprintln!("DIAG_PIN missing_by_cpu={missing_by_cpu:?} runs_by_cpu={runs_by_cpu:?}");
+    }
     let pid = s.child.id().to_string();
     let _ = Command::new("kill").args(["-TERM", &pid]).status();
     let _ = s.wait_exit();
