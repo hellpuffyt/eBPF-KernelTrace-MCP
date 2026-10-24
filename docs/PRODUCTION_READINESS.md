@@ -140,7 +140,7 @@ Userspace only. Criterion micro-benchmarks plus an end-to-end example, measured 
 
 See [LIMITATIONS.md](LIMITATIONS.md). The most important ones:
 - Live-mode overhead and loss under load are unmeasured (item 21). Only two kernels are verified (items 19–20).
-- Kernel-side ring-buffer drops are not counted; a counter is listed in [good-first-issues.md](good-first-issues.md) and is deliberately not implemented here.
+- Kernel-side ring-buffer drops are counted (`stats.kernel.ring_full_drops`, added after this report's tested commit; see the deep-audit addendum below) but the dropped events are lost.
 - 5 ms polling latency in live mode.
 - Fixed tracepoint offsets (no CO-RE).
 - MCP revision 2026-07-28 (stateless) not supported.
@@ -170,3 +170,22 @@ What the test asserts is listed at the top of `tests/live_kernel.rs`.
 - A run of the `live-kernel` CI job (items 19–20). Item 21 still needs a dedicated Linux host or VM (kernel ≥ 5.8, BTF, CAP_BPF+CAP_PERFMON or root) for overhead measurements.
 - A desktop MCP client for item 22.
 - A GitHub Actions run of this branch for item 23.
+
+## Deep-audit addendum (branch `deep-audit`)
+
+- **Kernel-side counters.** The probe now keeps a per-CPU `STATS` map: ring-full drops, unreadable paths, and
+  per-program "fired" counts, surfaced as `stats.kernel`. `[live] ring_buffer_bytes` sets the ring size.
+- **Flood test (live, arm64 6.8.0-117-generic, Colima, privileged container):** run C of `tests/live_kernel.rs`
+  spawns 2000 `/bin/true` processes from 8 threads (bounded, no fork bomb) against a one-page (4096 B) ring.
+  Two loops of 30 iterations each passed 30/30; in all 60, `records + ring_full_drops == fired_exec +
+  fired_exit + fired_open` exactly (e.g. 491 + 7514 = 8005), retention stayed ≤ `max_events`, and server RSS
+  grew by at most 128 KiB during the flood (from 8712 KiB).
+- **Missing `open` events on main's `live-kernel` job (x86_64 7.0.0-1017-azure, 2 failures).** The CI logs show
+  run B's exec and exit for the `ktcat…` pid with consecutive sequence numbers (in one failure, seq 1 and 2): no
+  `open` event from *any* process was stored in that run, so it is not a path-read (`-EFAULT`) problem — the
+  probe emits an open event even when the path cannot be read. Not reproduced on arm64 6.8: the unmodified live
+  test passed 30/30 in a loop, and the extended one 30/30. Root cause on 7.0 is **not confirmed**. The test now
+  first proves `kt_open` runs (`stats.kernel.fired_open > 0` after opening a file itself) and every timeout
+  prints the kernel counters, so the next failure will show whether the program never ran (`fired_open = 0`),
+  lost events to a full ring (`ring_full_drops`), or lost them in userspace.
+

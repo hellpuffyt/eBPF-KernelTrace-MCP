@@ -23,13 +23,15 @@ use crate::filter::Filter;
 use crate::queue::{BoundedQueue, PushOutcome};
 use crate::redact::Redactor;
 use crate::sample::Sampler;
-use crate::source::Source;
+use crate::source::{KernelCounters, Source};
 use crate::store::{EventStore, QueryResult, Retention};
 use crate::summary::{Summary, summarize};
 
 const POLL_BATCH: usize = 256;
 const IDLE_SLEEP: Duration = Duration::from_millis(5);
 const LATENCY_WINDOW: usize = 4096;
+/// How often the reader refreshes the kernel-side counters.
+const KERNEL_COUNTERS_EVERY: Duration = Duration::from_millis(100);
 
 /// How the reader paces a source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +81,7 @@ struct Shared {
     stop: AtomicBool,
     last_error: Mutex<Option<String>>,
     source_name: &'static str,
+    kernel: Mutex<Option<KernelCounters>>,
 }
 
 impl Shared {
@@ -145,6 +148,10 @@ pub struct StatsSnapshot {
     pub last_source_error: Option<String>,
     /// Time events spent between decode and storage.
     pub queue_latency: LatencySnapshot,
+    /// Counters kept by the eBPF probe (live mode only; `null` otherwise),
+    /// refreshed every 100 ms. `ring_full_drops` is the kernel-side loss that
+    /// the userspace counters above cannot see.
+    pub kernel: Option<KernelCounters>,
 }
 
 /// A running pipeline. See the module docs.
@@ -188,9 +195,33 @@ impl Ingest {
     }
 }
 
+fn record_error(shared: &Shared, e: &crate::error::SourceError) {
+    shared
+        .counters
+        .source_errors
+        .fetch_add(1, Ordering::Relaxed);
+    *shared
+        .last_error
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
+}
+
+fn refresh_kernel_counters(shared: &Shared, source: &mut dyn Source) {
+    match source.kernel_counters() {
+        Ok(k) => *shared.kernel.lock().unwrap_or_else(PoisonError::into_inner) = k,
+        Err(e) => record_error(shared, &e),
+    }
+}
+
 fn reader(shared: Arc<Shared>, mut source: Box<dyn Source>, mut ingest: Ingest, pacing: Pacing) {
     let mut delivered: u64 = 0;
+    let mut counters_at = Instant::now();
+    refresh_kernel_counters(&shared, source.as_mut());
     while !shared.stop.load(Ordering::Acquire) {
+        if counters_at.elapsed() >= KERNEL_COUNTERS_EVERY {
+            refresh_kernel_counters(&shared, source.as_mut());
+            counters_at = Instant::now();
+        }
         let budget = match pacing {
             Pacing::Unpaced => POLL_BATCH,
             Pacing::PerSecond(rate) => {
@@ -207,18 +238,12 @@ fn reader(shared: Arc<Shared>, mut source: Box<dyn Source>, mut ingest: Ingest, 
             Ok(0) => thread::sleep(IDLE_SLEEP),
             Ok(n) => delivered += n as u64,
             Err(e) => {
-                shared
-                    .counters
-                    .source_errors
-                    .fetch_add(1, Ordering::Relaxed);
-                *shared
-                    .last_error
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
+                record_error(&shared, &e);
                 thread::sleep(Duration::from_millis(100));
             }
         }
     }
+    refresh_kernel_counters(&shared, source.as_mut());
     shared.queue.close();
 }
 
@@ -285,6 +310,7 @@ impl Engine {
             stop: AtomicBool::new(false),
             last_error: Mutex::new(None),
             source_name: source.name(),
+            kernel: Mutex::new(None),
         });
         let ingest = Ingest {
             sources: config.sources.clone(),
@@ -388,6 +414,7 @@ impl Engine {
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone(),
             queue_latency,
+            kernel: *s.kernel.lock().unwrap_or_else(PoisonError::into_inner),
         }
     }
 

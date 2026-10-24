@@ -101,7 +101,7 @@ The synthetic stream includes paths such as `/home/alice/.ssh/id_ed25519` and `/
 - `kerneltrace-ebpf`: Aya tracepoint programs `kt_exec`, `kt_exit` and `kt_open` writing to a 256 KiB BPF ring buffer. Path reads are gated by a loader-set global.
 - `live` feature: loads the object, attaches only the enabled programs and drains the ring buffer.
 
-**Planned** (no code yet): kernel-side drop counter, epoll wake-ups instead of 5 ms polling, CO-RE/BTF field access, more event kinds (connect, setuid), a Streamable HTTP transport.
+**Planned** (no code yet): epoll wake-ups instead of 5 ms polling, CO-RE/BTF field access, more event kinds (connect, setuid), a Streamable HTTP transport.
 
 ## Architecture
 
@@ -201,7 +201,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 The details are in [docs/LIMITATIONS.md](docs/LIMITATIONS.md). The main limits are:
 - The live path is integration-tested on two kernels only (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64). Overhead and loss under load are unmeasured.
-- Kernel-side ring-buffer overflow drops are **not counted**.
+- Kernel-side ring-buffer overflow drops are counted by the probe (`stats.kernel.ring_full_drops`), but the events themselves are lost; raise `[live] ring_buffer_bytes` if that counter grows.
 - Tracepoint offsets are fixed (no CO-RE). `sys_enter_openat` layout changes would break `kt_open`.
 - Live polling sleeps 5 ms when the ring is empty, which adds up to 5 ms of latency.
 - Sampling is deterministic 1-in-N, not statistically unbiased.

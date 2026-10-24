@@ -12,6 +12,13 @@ All notable changes to this project are documented here. The format follows [Kee
 - `tools/list` and `tools/call` before `initialize`, and requests with `null` or fractional ids, are rejected with `-32600`.
 
 ### Added
+- Kernel-side counters: the probe keeps a per-CPU `STATS` map (ring-buffer-full drops, unreadable paths,
+  events each program tried to emit), reported by the `stats` tool as `kernel` (`null` in synthetic mode).
+- `[live] ring_buffer_bytes` (default 256 KiB) sets the kernel ring buffer size.
+- Live test run C: a bounded 2000-process flood against a one-page ring buffer (drops counted, retention and
+  memory bounded, clean detach). Run B now checks that `kt_open` actually runs, and timeouts print the counters.
+- Engine tests: kernel counters in `stats`, and an unpaced flood that stays within `max_events`/`queue_capacity`
+  with every record accounted for.
 - `.editorconfig`, `docs/PRODUCTION_READINESS.md`.
 - Live-kernel integration test (`tests/live_kernel.rs`) and CI job `live-kernel`. It passes on 7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64: the first runs of the probe against real kernels.
 

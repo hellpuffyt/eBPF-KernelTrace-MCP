@@ -89,8 +89,7 @@ fn start_engine(cfg: &Config) -> Result<Engine> {
             )
         }
         Mode::Live => (
-            live::open(cfg.live.ebpf_object.as_deref(), &cfg.sources)
-                .context("cannot start live mode")?,
+            live::open(&cfg.live, &cfg.sources).context("cannot start live mode")?,
             Pacing::Unpaced,
         ),
     };

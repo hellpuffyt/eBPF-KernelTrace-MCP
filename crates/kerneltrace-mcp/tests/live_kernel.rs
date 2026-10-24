@@ -17,7 +17,13 @@
 //!   unique file (path must be reported verbatim) and a file whose name
 //!   contains `token` (path must be `<redacted>`); exec carries the binary path.
 //!
-//! Both runs end with SIGTERM: exit status 0, and the kernel's program list
+//! - **C, flood with a one-page ring buffer**: a bounded pool of threads runs
+//!   2000 short-lived processes (no fork bomb: at most 8 at a time). The
+//!   probe must count its ring-full losses (`stats.kernel.ring_full_drops`),
+//!   retention and the queue must stay within their limits, and the server's
+//!   resident memory must stay bounded.
+//!
+//! Every run ends with SIGTERM: exit status 0, and the kernel's program list
 //! (read with aya's `loaded_programs()`) must show no `kt_*` programs left.
 
 #![cfg(target_os = "linux")]
@@ -137,7 +143,10 @@ fn start_server(config: &Path) -> Session {
     s
 }
 
-/// Polls until events for `pid` include every kind in `kinds`.
+/// Polls until events for `pid` include every kind in `kinds`. On timeout the
+/// panic message carries the pipeline and kernel-side counters, so a missing
+/// event can be attributed (never fired, lost to a full ring, or dropped in
+/// userspace).
 fn events_for(s: &mut Session, pid: u32, kinds: &[&str]) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -146,10 +155,10 @@ fn events_for(s: &mut Session, pid: u32, kinds: &[&str]) -> Vec<Value> {
         if kinds.iter().all(|k| events.iter().any(|e| e["kind"] == *k)) {
             return events;
         }
-        assert!(
-            Instant::now() < deadline,
-            "pid {pid}: wanted kinds {kinds:?}, got {events:#?}"
-        );
+        if Instant::now() >= deadline {
+            let stats = s.tool("stats", json!({}));
+            panic!("pid {pid}: wanted kinds {kinds:?}, got {events:#?}\nstats: {stats}");
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -162,6 +171,22 @@ fn one<'a>(events: &'a [Value], kind: &str) -> &'a Value {
 
 fn ts(e: &Value) -> u64 {
     e["ts_ns"].as_u64().expect("ts_ns")
+}
+
+/// Polls `stats` until `kernel.<field>` (refreshed every 100 ms) reaches `n`.
+fn kernel_counter_at_least(s: &mut Session, field: &str, n: u64) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let stats = s.tool("stats", json!({}));
+        if stats["kernel"][field].as_u64().unwrap_or(0) >= n {
+            return stats;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "kernel.{field} stayed below {n}: {stats}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Sends SIGTERM and checks a clean exit, clean stats and full detach.
@@ -178,6 +203,16 @@ fn stop(mut s: Session) {
     assert!(stats["last_source_error"].is_null());
     // Drops are allowed under load but must be accounted, never negative/missing.
     assert!(stats["queue_dropped_newest"].is_u64() && stats["queue_dropped_oldest"].is_u64());
+    let k = &stats["kernel"];
+    for field in [
+        "ring_full_drops",
+        "path_unreadable",
+        "fired_exec",
+        "fired_exit",
+        "fired_open",
+    ] {
+        assert!(k[field].is_u64(), "kernel counter {field} missing: {stats}");
+    }
 
     let pid = s.child.id().to_string();
     assert!(
@@ -212,10 +247,8 @@ fn live_probe_reports_known_activity() {
             .unwrap_or_default()
             .trim()
     );
-    assert!(
-        loaded_probe_programs().is_empty(),
-        "stale kt_* programs loaded before the test"
-    );
+    // A previous (crashed) run's programs are freed asynchronously.
+    wait_until_detached();
 
     let id = unique();
     let dir = std::env::temp_dir().join(format!("kt-live-{id}"));
@@ -273,6 +306,11 @@ fn live_probe_reports_known_activity() {
     );
     let summary = s.tool("summarize_events", json!({}));
     assert!(summary["by_kind"].get("open").is_none(), "{summary}");
+    let stats = kernel_counter_at_least(&mut s, "fired_exec", 1);
+    assert_eq!(
+        stats["kernel"]["fired_open"], 0,
+        "kt_open not loaded: {stats}"
+    );
     assert!(summary["by_kind"]["exec"].as_u64().expect("exec") >= 1);
     stop(s);
 
@@ -287,6 +325,23 @@ fn live_probe_reports_known_activity() {
     .expect("write");
     let mut s = start_server(&cfg_b);
     assert_eq!(loaded_probe_programs(), PROGS);
+    // kt_open must actually run, not just be attached: open a file ourselves
+    // and wait for the probe's own invocation counter to move.
+    let probe_file = dir.join(format!("probe-{id}.txt"));
+    std::fs::write(&probe_file, "x").expect("write");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let _ = std::fs::read(&probe_file).expect("read");
+        let stats = s.tool("stats", json!({}));
+        if stats["kernel"]["fired_open"].as_u64().unwrap_or(0) > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "kt_open is attached but the kernel never ran it: {stats}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     let cat_name = format!("ktcat{id}");
     let cat_bin = copy_bin("/bin/cat", &dir, &cat_name);
@@ -361,4 +416,102 @@ fn live_probe_reports_known_activity() {
     assert_eq!(summary["by_kind"]["exec"], 2, "{summary}");
     assert_eq!(summary["by_kind"]["exit"], 2, "{summary}");
     stop(s);
+
+    // ---- Run C: flood with a one-page ring buffer ----
+    let page = page_size();
+    let cfg_c = dir.join("c.toml");
+    std::fs::write(
+        &cfg_c,
+        format!(
+            "mode = \"live\"\n[limits]\nmax_events = 1000\nqueue_capacity = 64\n[sources]\nopen = true\n[live]\nebpf_object = {object:?}\nring_buffer_bytes = {page}\n"
+        ),
+    )
+    .expect("write");
+    let mut s = start_server(&cfg_c);
+    let rss_before = rss_kib(s.child.id());
+    const PROCS: usize = 2000;
+    const WORKERS: usize = 8;
+    let flood_start = Instant::now();
+    std::thread::scope(|scope| {
+        for _ in 0..WORKERS {
+            scope.spawn(|| {
+                for _ in 0..PROCS / WORKERS {
+                    let st = Command::new("/bin/true").status().expect("spawn true");
+                    assert!(st.success());
+                }
+            });
+        }
+    });
+    let flood_secs = flood_start.elapsed().as_secs_f64();
+    // Let the reader drain and the kernel counters refresh (every 100 ms).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let stats = loop {
+        let stats = s.tool("stats", json!({}));
+        let fired_exec = stats["kernel"]["fired_exec"].as_u64().unwrap_or(0);
+        if fired_exec >= PROCS as u64 && stats["queue_len"] == 0 {
+            break stats;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "flood: kernel saw fewer than {PROCS} execs: {stats}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let rss_after = rss_kib(s.child.id());
+    eprintln!(
+        "flood: {PROCS} processes in {flood_secs:.2}s, ring {page} B, rss {rss_before} -> {rss_after} KiB, stats {stats}"
+    );
+    let k = &stats["kernel"];
+    let drops = k["ring_full_drops"].as_u64().expect("drops");
+    assert!(
+        drops > 0,
+        "a one-page ring must overflow under this flood: {stats}"
+    );
+    assert!(stats["stored"].as_u64().expect("stored") <= 1000, "{stats}");
+    assert!(stats["queue_capacity"] == 64, "{stats}");
+    let fired = k["fired_exec"].as_u64().unwrap()
+        + k["fired_exit"].as_u64().unwrap()
+        + k["fired_open"].as_u64().unwrap();
+    // Each attempted event was either delivered or counted as a kernel drop.
+    // (Other processes keep producing events, so on a busy host this is only
+    // approximately equal between two counter refreshes; on a quiet VM it is
+    // exact.)
+    assert!(drops < fired, "{stats}");
+    // Everything read from the ring is accounted for downstream.
+    let records = stats["records"].as_u64().expect("records");
+    let accounted = stats["decode_errors"].as_u64().unwrap()
+        + stats["disabled_kind"].as_u64().unwrap()
+        + stats["sampled_out"].as_u64().unwrap()
+        + stats["queue_dropped_newest"].as_u64().unwrap()
+        + stats["queue_dropped_oldest"].as_u64().unwrap()
+        + stats["last_seq"].as_u64().unwrap();
+    assert_eq!(
+        records, accounted,
+        "every record is stored or counted: {stats}"
+    );
+    assert!(
+        rss_after < rss_before + 32 * 1024,
+        "server memory grew from {rss_before} to {rss_after} KiB"
+    );
+    stop(s);
+}
+
+fn page_size() -> u64 {
+    let out = Command::new("getconf")
+        .arg("PAGESIZE")
+        .output()
+        .expect("getconf");
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("page size")
+}
+
+fn rss_kib(pid: u32) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .expect("status")
+        .lines()
+        .find_map(|l| l.strip_prefix("VmRSS:"))
+        .and_then(|v| v.split_whitespace().next()?.parse().ok())
+        .expect("VmRSS")
 }

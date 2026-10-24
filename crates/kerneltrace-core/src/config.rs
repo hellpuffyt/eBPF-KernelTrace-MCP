@@ -111,11 +111,26 @@ impl Default for SyntheticConfig {
 }
 
 /// `[live]` table.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LiveConfig {
     /// Path to the compiled eBPF object (`kerneltrace-ebpf`).
     pub ebpf_object: Option<String>,
+    /// Size of the kernel ring buffer in bytes: a power of two and a multiple
+    /// of the kernel page size. Default 256 KiB (about 840 events).
+    pub ring_buffer_bytes: u32,
+}
+
+/// Default `[live] ring_buffer_bytes`.
+pub const DEFAULT_RING_BUFFER_BYTES: u32 = 256 * 1024;
+
+impl Default for LiveConfig {
+    fn default() -> Self {
+        Self {
+            ebpf_object: None,
+            ring_buffer_bytes: DEFAULT_RING_BUFFER_BYTES,
+        }
+    }
 }
 
 /// Top-level configuration.
@@ -183,6 +198,12 @@ impl Config {
             self.synthetic.rate_per_sec <= 10_000_000,
             "synthetic.rate_per_sec must be <= 10000000",
         )?;
+        let ring = self.live.ring_buffer_bytes;
+        check(
+            ring.is_power_of_two() && (4096..=(1 << 30)).contains(&ring),
+            "live.ring_buffer_bytes must be a power of two between 4096 and 1073741824 \
+             (and a multiple of the kernel page size)",
+        )?;
         check(
             self.sources.exec || self.sources.exit || self.sources.open,
             "at least one of sources.exec, sources.exit, sources.open must be enabled",
@@ -229,5 +250,20 @@ mod tests {
             Config::from_toml("[limits]\noverflow = \"block\""),
             Err(ConfigError::Parse(_))
         ));
+        for bad in [0u32, 1000, 2048, 12288] {
+            assert!(
+                matches!(
+                    Config::from_toml(&format!("[live]\nring_buffer_bytes = {bad}")),
+                    Err(ConfigError::Invalid(_))
+                ),
+                "{bad}"
+            );
+        }
+        let ok = Config::from_toml("[live]\nring_buffer_bytes = 4096").expect("4 KiB ring");
+        assert_eq!(ok.live.ring_buffer_bytes, 4096);
+        assert_eq!(
+            Config::default().live.ring_buffer_bytes,
+            DEFAULT_RING_BUFFER_BYTES
+        );
     }
 }

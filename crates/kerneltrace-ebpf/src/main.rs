@@ -22,13 +22,21 @@ use aya_ebpf::helpers::{
     bpf_probe_read_kernel_str_bytes, bpf_probe_read_user_str_bytes,
 };
 use aya_ebpf::macros::{map, tracepoint};
-use aya_ebpf::maps::RingBuf;
+use aya_ebpf::maps::{PerCpuArray, RingBuf};
 use aya_ebpf::programs::TracePointContext;
-use kerneltrace_common::{KIND_EXEC, KIND_EXIT, KIND_OPEN, PATH_LEN, RawEvent};
+use kerneltrace_common::{
+    KIND_EXEC, KIND_EXIT, KIND_OPEN, PATH_LEN, RawEvent, STAT_FIRED_EXEC, STAT_FIRED_EXIT,
+    STAT_FIRED_OPEN, STAT_PATH_UNREADABLE, STAT_RING_FULL, STAT_SLOTS,
+};
 
 /// 256 KiB ring buffer shared by all programs (must be a power-of-two multiple of the page size).
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+
+/// Per-CPU counters (see `kerneltrace_common::STAT_*`); per-CPU so the
+/// programs never contend or need atomics. Userspace sums the CPUs.
+#[map]
+static STATS: PerCpuArray<u64> = PerCpuArray::with_max_entries(STAT_SLOTS, 0);
 
 /// Set to 1 by the loader only when the operator enabled `include_paths`.
 /// When 0, no path bytes are ever read from the kernel or user memory.
@@ -47,11 +55,25 @@ fn include_paths() -> bool {
     unsafe { core::ptr::read_volatile(&INCLUDE_PATHS) != 0 }
 }
 
+fn bump(slot: u32) {
+    if let Some(p) = STATS.get_ptr_mut(slot) {
+        // SAFETY: the pointer is this CPU's slot of a per-CPU array, and a
+        // tracepoint program is not preempted on its CPU while it runs.
+        unsafe { *p += 1 };
+    }
+}
+
 /// Reserves a slot, fills the common header, lets `fill_path` write the path
-/// and returns nothing. If the ring buffer is full the event is dropped here
-/// (the kernel-side loss is not counted; see Limitations).
+/// and submits it. If the ring buffer is full the event is dropped here and
+/// counted in `STATS[STAT_RING_FULL]`.
 fn emit(kind: u32, ret: i64, fill_path: impl FnOnce(&mut [u8; PATH_LEN]) -> u32) {
+    bump(match kind {
+        KIND_EXEC => STAT_FIRED_EXEC,
+        KIND_EXIT => STAT_FIRED_EXIT,
+        _ => STAT_FIRED_OPEN,
+    });
     let Some(mut entry) = EVENTS.reserve::<RawEvent>(0) else {
+        bump(STAT_RING_FULL);
         return;
     };
     let ev = entry.write(RawEvent::zeroed());
@@ -76,6 +98,7 @@ pub fn kt_exec(ctx: TracePointContext) -> u32 {
     emit(KIND_EXEC, 0, |path| {
         // SAFETY: offset taken from the tracepoint's format file.
         let Ok(loc) = (unsafe { ctx.read_at::<u32>(EXEC_FILENAME_LOC) }) else {
+            bump(STAT_PATH_UNREADABLE);
             return 0;
         };
         let offset = (loc & 0xffff) as usize;
@@ -83,7 +106,10 @@ pub fn kt_exec(ctx: TracePointContext) -> u32 {
         let src = unsafe { (ctx.as_ptr() as *const u8).add(offset) };
         match unsafe { bpf_probe_read_kernel_str_bytes(src, path) } {
             Ok(s) => s.len() as u32,
-            Err(_) => 0,
+            Err(_) => {
+                bump(STAT_PATH_UNREADABLE);
+                0
+            }
         }
     });
     0
@@ -107,12 +133,16 @@ pub fn kt_open(ctx: TracePointContext) -> u32 {
     let flags = unsafe { ctx.read_at::<i64>(OPENAT_FLAGS) }.unwrap_or(0);
     emit(KIND_OPEN, flags, |path| {
         let Ok(ptr) = (unsafe { ctx.read_at::<u64>(OPENAT_FILENAME) }) else {
+            bump(STAT_PATH_UNREADABLE);
             return 0;
         };
         // SAFETY: the helper validates the user pointer and faults safely.
         match unsafe { bpf_probe_read_user_str_bytes(ptr as *const u8, path) } {
             Ok(s) => s.len() as u32,
-            Err(_) => 0,
+            Err(_) => {
+                bump(STAT_PATH_UNREADABLE);
+                0
+            }
         }
     });
     0

@@ -197,6 +197,47 @@ mod tests {
                 .iter()
                 .any(|r| r.contains("missing privileges"))
         );
+        let no_tracefs = evaluate(
+            "linux",
+            true,
+            Some("6.8.0".into()),
+            Some(true),
+            Some(false),
+            Some(1 << CAP_SYS_ADMIN),
+        );
+        assert!(!no_tracefs.live_supported);
+        assert!(
+            no_tracefs
+                .reasons
+                .iter()
+                .any(|r| r.contains("tracefs not found"))
+        );
+        // The probe uses fixed tracepoint offsets, not BTF/CO-RE: missing BTF
+        // is reported but does not block live mode.
+        let no_btf = evaluate(
+            "linux",
+            true,
+            Some("6.8.0".into()),
+            Some(false),
+            Some(true),
+            Some(1 << CAP_SYS_ADMIN),
+        );
+        assert!(no_btf.live_supported, "{:?}", no_btf.reasons);
+        assert_eq!(no_btf.btf_available, Some(false));
+        let not_compiled = evaluate(
+            "linux",
+            false,
+            Some("6.8.0".into()),
+            Some(true),
+            Some(true),
+            Some(1 << CAP_SYS_ADMIN),
+        );
+        assert!(
+            not_compiled
+                .reasons
+                .iter()
+                .any(|r| r.contains("`live` feature"))
+        );
     }
 
     #[test]

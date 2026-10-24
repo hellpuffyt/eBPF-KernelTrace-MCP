@@ -1,5 +1,5 @@
 //! Checks the compiled eBPF probe against what the userspace loader expects:
-//! program names and types, the ring-buffer map, the `INCLUDE_PATHS` global
+//! program names and types, the ring-buffer and counter maps, the `INCLUDE_PATHS` global
 //! and a GPL-compatible license. Parsing is done with `aya-obj` (the parser
 //! aya's loader uses), so this runs on any OS without a kernel.
 //!
@@ -15,9 +15,11 @@
 
 use aya_obj::Object;
 use aya_obj::ProgramSection;
-use kerneltrace_core::live::{INCLUDE_PATHS_GLOBAL, PROGRAMS, RING_MAP};
+use kerneltrace_common::STAT_SLOTS;
+use kerneltrace_core::live::{INCLUDE_PATHS_GLOBAL, PROGRAMS, RING_MAP, STATS_MAP};
 
 const BPF_MAP_TYPE_RINGBUF: u32 = 27;
+const BPF_MAP_TYPE_PERCPU_ARRAY: u32 = 6;
 
 #[test]
 #[ignore = "needs the compiled probe: set KERNELTRACE_EBPF_OBJECT and pass --ignored"]
@@ -46,6 +48,11 @@ fn probe_object_matches_loader_expectations() {
         size.is_power_of_two() && size >= 4096,
         "ring size {size} must be a power-of-two multiple of the page size"
     );
+
+    let stats = obj.maps.get(STATS_MAP).expect("kernel counter map present");
+    assert_eq!(stats.map_type(), BPF_MAP_TYPE_PERCPU_ARRAY);
+    assert_eq!(stats.max_entries(), STAT_SLOTS);
+    assert_eq!(stats.value_size(), 8, "u64 counters");
 
     assert!(
         obj.maps.keys().any(|k| k.starts_with(".rodata")),
