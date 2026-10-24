@@ -87,14 +87,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel: ["v6.18", "v6.19", "v7.0"]
+        kernel: ["v7.0", "azure-7.0.0-1017", "azure-7.0.0-1017-b"]
     name: vm ${{ matrix.kernel }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
       BPF_LINKER_VERSION: v0.12.0
       BPF_LINKER_SHA256: 6789717c8cb6a2a5d920f3b6bfac2bd7efc00f6228ecd149108a99699a75c679
-      ITER: "15"
+      ITER: "25"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -116,14 +116,25 @@ jobs:
           sudo apt-get install -y -q qemu-system-x86 virtme-ng busybox-static >/dev/null 2>&1 || sudo apt-get install -y -q qemu-system-x86 busybox-static
           command -v vng || { pipx install virtme-ng && echo "$HOME/.local/bin" >> "$GITHUB_PATH"; }
           sudo chmod 666 /dev/kvm; ls -l /dev/kvm
-          base="https://kernel.ubuntu.com/mainline/${{ matrix.kernel }}/amd64/"
-          for p in linux-image-unsigned linux-modules; do
-            f=$(curl -fsSL "$base" | grep -oE "href=\"${p}-[^\"]*generic[^\"]*amd64\.deb\"" | head -1 | cut -d'"' -f2)
-            curl -fsSL "$base$f" -o "$p.deb"
-          done
+          case "${{ matrix.kernel }}" in
+          azure-*)
+            base="http://archive.ubuntu.com/ubuntu/pool/main/l/linux-azure-7.0/"
+            for p in linux-image-unsigned linux-modules; do
+              curl -fsSL "${base}${p}-7.0.0-1017-azure_7.0.0-1017.17~24.04.1_amd64.deb" -o "$p.deb"
+            done
+            kv=7.0.0-1017-azure ;;
+          *)
+            base="https://kernel.ubuntu.com/mainline/${{ matrix.kernel }}/amd64/"
+            for p in linux-image-unsigned linux-modules; do
+              f=$(curl -fsSL "$base" | grep -oE "href=\"${p}-[^\"]*generic[^\"]*amd64\.deb\"" | head -1 | cut -d'"' -f2)
+              curl -fsSL "$base$f" -o "$p.deb"
+            done
+            kv="" ;;
+          esac
           sudo dpkg -i --force-depends linux-modules.deb linux-image-unsigned.deb >/dev/null 2>&1 || true
           ls /boot/vmlinuz-*
-          kv=$(ls /boot | grep -oE "vmlinuz-[0-9.]+-0[0-9]+-generic" | head -1 | sed 's/vmlinuz-//')
+          [ -n "$kv" ] || kv=$(ls /boot | grep -oE "vmlinuz-[0-9.]+-0[0-9]+-generic" | head -1 | sed 's/vmlinuz-//')
+          grep -E "CONFIG_VIRTIO_PCI=|CONFIG_NET_9P_VIRTIO=|CONFIG_9P_FS=|CONFIG_VIRTIO_FS=|CONFIG_DEBUG_INFO_BTF=" /boot/config-$kv || true
           echo "GUEST_KVER=$kv" >> "$GITHUB_ENV"
           sudo chmod 644 /boot/vmlinuz-$kv
       - name: Build probe
