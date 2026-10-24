@@ -1,7 +1,7 @@
 # Known limitations
 
 ## Verification gaps (honest status)
-- **The live eBPF path is verified on two kernels only** (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64) by `tests/live_kernel.rs`: load, attach, event correctness for a known workload, redaction and clean detach. Kernels 5.8–6.7, other distributions, lockdown modes other than `none`, and behaviour under heavy load are untested. See KERNEL_COMPAT.md.
+- **The live eBPF path is verified on two kernels only** (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64) by `tests/live_kernel.rs`: load, attach, event correctness for a known workload, redaction and clean detach. Kernels 5.8–6.7, other distributions, lockdown modes other than `none`, and behaviour under heavy load are untested. See KERNEL_COMPAT.md. On 7.0.0-1017-azure/x86_64 the live test is **intermittent** (2 failures on main, root cause not confirmed; see docs/PRODUCTION_READINESS.md).
 - The server has been exercised with the project's own stdio client, not yet with a third-party MCP client.
 - Benchmarks were taken on one macOS machine under heavy unrelated load (see BENCHMARKS.md).
 

@@ -6,7 +6,7 @@ The live-kernel integration test (`crates/kerneltrace-mcp/tests/live_kernel.rs`)
 
 | Kernel | Arch | Environment | Commit | Result |
 |---|---|---|---|---|
-| 7.0.0-1017-azure | x86_64 | GitHub-hosted `ubuntu-latest` VM, CI job `live-kernel` (PR #5) | `04b4f6a` | 1 passed. Run A: 2 records (exec+exit). Run B: 66 records, 1 redacted. `decode_errors` 0, `source_errors` 0, clean SIGTERM. |
+| 7.0.0-1017-azure | x86_64 | GitHub-hosted `ubuntu-latest` VM, CI job `live-kernel` (PR #5) | `04b4f6a` | 1 passed. Run A: 2 records (exec+exit). Run B: 66 records, 1 redacted. `decode_errors` 0, `source_errors` 0, clean SIGTERM. **Intermittent:** after merge to main the same job failed twice on this kernel (jobs 119940290509, 119939678398: run B stored exec+exit but no open events); root cause not confirmed — the kernel counters added in this branch will attribute the next failure. |
 | 6.8.0-117-generic (Ubuntu 24.04) | aarch64 | local Colima VM (2 vCPU, 4 GB); privileged container with `--pid=host`; BTF present, lockdown `none`, `unprivileged_bpf_disabled` = 2 | `04b4f6a` | 1 passed in 1.66 s. Run A: 2 records, 0 redacted. Run B: 82 records, 2 redacted. `decode_errors` 0, `source_errors` 0, no queue drops, clean SIGTERM, no `kt_*` programs left. |
 
 On 6.8.0-117-generic/aarch64 the tracepoint `format` files match the offsets below exactly: `sched_process_exec` `__data_loc filename` @ 8; `sys_enter_openat` `filename` @ 24, `flags` @ 32.

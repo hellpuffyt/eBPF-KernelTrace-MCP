@@ -200,7 +200,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 ## Limitations & roadmap
 
 The details are in [docs/LIMITATIONS.md](docs/LIMITATIONS.md). The main limits are:
-- The live path is integration-tested on two kernels only (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64). Overhead and loss under load are unmeasured.
+- The live path is integration-tested on two kernels only (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64). Overhead and loss under load are unmeasured. On 7.0.0-1017-azure/x86_64 the live test is **intermittent** (2 failures on main, root cause not confirmed; see docs/PRODUCTION_READINESS.md).
 - Kernel-side ring-buffer overflow drops are counted by the probe (`stats.kernel.ring_full_drops`), but the events themselves are lost; raise `[live] ring_buffer_bytes` if that counter grows.
 - Tracepoint offsets are fixed (no CO-RE). `sys_enter_openat` layout changes would break `kt_open`.
 - Live polling sleeps 5 ms when the ring is empty, which adds up to 5 ms of latency.
