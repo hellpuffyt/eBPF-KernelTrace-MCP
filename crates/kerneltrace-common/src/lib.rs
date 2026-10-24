@@ -28,6 +28,22 @@ pub const KIND_EXIT: u32 = 2;
 /// A task entered `openat(2)` (`syscalls:sys_enter_openat`).
 pub const KIND_OPEN: u32 = 3;
 
+/// Slots of the probe's per-CPU `STATS` counter array (userspace sums the CPUs).
+///
+/// `bpf_ringbuf_reserve` failed (ring buffer full): the event was lost in the kernel.
+pub const STAT_RING_FULL: u32 = 0;
+/// A path could not be read (for example an unmapped user page); the event was
+/// still emitted, with `path_len = 0`.
+pub const STAT_PATH_UNREADABLE: u32 = 1;
+/// The `kt_exec` program produced (or tried to produce) an event.
+pub const STAT_FIRED_EXEC: u32 = 2;
+/// The `kt_exit` program produced (or tried to produce) an event.
+pub const STAT_FIRED_EXIT: u32 = 3;
+/// The `kt_open` program produced (or tried to produce) an event.
+pub const STAT_FIRED_OPEN: u32 = 4;
+/// Number of slots in `STATS`.
+pub const STAT_SLOTS: u32 = 5;
+
 /// One event record as written into the ring buffer.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

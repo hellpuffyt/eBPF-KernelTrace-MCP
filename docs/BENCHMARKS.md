@@ -1,6 +1,6 @@
 # Benchmarks
 
-**Scope: userspace only.** These numbers cover decoding, redaction, the queue, the store, and the threaded pipeline fed by the synthetic source. They say **nothing** about the cost of the eBPF probe in the kernel, ring-buffer wake-ups, or overhead on traced processes. Those have not been measured, because the probe has not been run on a live kernel yet.
+**Scope: userspace only.** These numbers cover decoding, redaction, the queue, the store, and the threaded pipeline fed by the synthetic source. They say **nothing** about the cost of the eBPF probe in the kernel, ring-buffer wake-ups, or overhead on traced processes. Those have not been measured. The probe passes a functional integration test on two kernels (see KERNEL_COMPAT.md), but no overhead benchmark exists yet.
 
 ## Environment
 

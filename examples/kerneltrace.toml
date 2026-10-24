@@ -32,3 +32,6 @@ malformed_every = 0          # inject a truncated record every N (testing)
 # Path to the compiled probe, e.g. as built in
 # crates/kerneltrace-ebpf (see docs/KERNEL_COMPAT.md).
 # ebpf_object = "crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf"
+# Kernel ring buffer size: power of two, multiple of the page size.
+# Losses when it is full are counted in stats.kernel.ring_full_drops.
+ring_buffer_bytes = 262144

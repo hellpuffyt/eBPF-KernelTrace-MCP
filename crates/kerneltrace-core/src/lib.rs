@@ -28,5 +28,5 @@ pub use engine::{Engine, Pacing, StatsSnapshot};
 pub use error::{ConfigError, DecodeError, SourceError};
 pub use event::{Event, EventKind};
 pub use filter::Filter;
-pub use source::Source;
+pub use source::{KernelCounters, Source};
 pub use synthetic::SyntheticSource;

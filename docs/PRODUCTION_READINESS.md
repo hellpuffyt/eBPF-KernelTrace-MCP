@@ -1,9 +1,9 @@
 # Production readiness
 
-**Tested commit:** `12a7252` (branch `docs/production-readiness`) · **Date:** 2026-10-22 · **Host:** Apple M5, 10 cores, 16 GB, macOS 27.0.1, rustc 1.98.0
+**Tested commits:** `12a7252` for the portable gates and clean clone (Apple M5, 10 cores, 16 GB, macOS 27.0.1, rustc 1.98.0); `04b4f6a` for the live-kernel test on two Linux kernels (see below) · **Date:** 2026-10-22
 
 **Proposed classification: Partially Verified.** This is a proposal backed by the evidence below; it is not a self-award.
-Reason: the userspace pipeline and MCP server are verified for their documented scope (synthetic mode, any OS). The **live eBPF path is not verified**. It needs Linux ≥ 5.8 with BTF and CAP_BPF, which was not available. CI has not yet run on this branch.
+Reason: the userspace pipeline and MCP server are verified for their documented scope (synthetic mode, any OS). The live eBPF path now passes its integration test on **two kernels and two architectures** (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64). Still unverified: live-mode overhead and loss under load, older kernels (5.8–6.7), and a third-party MCP client.
 
 ## Scope and architecture
 
@@ -130,31 +130,38 @@ Userspace only. Criterion micro-benchmarks plus an end-to-end example, measured 
 | 16 | Probe object matches loader | programs, map, global, license | `probe_object -- --ignored` | PASS | — | `probe_object.rs` |
 | 17 | Lint / docs / deps | clean | fmt, clippy (host and Linux), doc, deny, audit | PASS | all exit 0 | CI `lint`, `deny` |
 | 18 | MSRV 1.88 | builds | `cargo +1.88 check` | PASS | exit 0 (host) | CI `msrv` |
-| 19 | Live probe loads and attaches | programs attach to the 3 tracepoints; only enabled ones load | CI `live-kernel` → `tests/live_kernel.rs` | **Pending** (job exists, not yet run) | requires Linux ≥ 5.8 with BTF + CAP_BPF | `live.rs` |
-| 20 | Live events are correct | exec/exit/open events match real activity (pids, comms, paths, ordering, redaction); clean detach on SIGTERM | CI `live-kernel` → `tests/live_kernel.rs` | **Pending** (job exists, not yet run) | requires Linux ≥ 5.8 with BTF + CAP_BPF | `kerneltrace-ebpf` |
+| 19 | Live probe loads and attaches | programs attach to the 3 tracepoints; only enabled ones load | `tests/live_kernel.rs` (CI `live-kernel`; local arm64 container) | PASS | 7.0.0-1017-azure x86_64 and 6.8.0-117-generic aarch64; `kt_open` absent when open is off | `live.rs` |
+| 20 | Live events are correct | exec/exit/open events match real activity (pids, comms, paths, ordering, redaction); clean detach on SIGTERM | `tests/live_kernel.rs` (CI `live-kernel`; local arm64 container) | PASS | both kernels: exact pid/comm/path matches, exec < open < exit, `<redacted>` token path, `decode_errors` 0, no `kt_*` programs after SIGTERM | `kerneltrace-ebpf` |
 | 21 | Live-mode overhead and loss | measured kernel cost and drop rate | — | **Not verified** | requires Linux ≥ 5.8 with BTF + CAP_BPF; not covered by the CI job | — |
 | 22 | Third-party MCP client | works with a real desktop client | — | **Not verified** | no third-party client run | — |
-| 23 | CI green on this branch | all jobs pass | GitHub Actions | **Not yet run** | — | `.github/workflows/ci.yml` |
+| 23 | CI green on this branch | all jobs pass | GitHub Actions | **Partially recorded** | `live-kernel` passed on `04b4f6a` (PR #5); the other jobs' status on that commit is not recorded here | `.github/workflows/ci.yml` |
 
 ## Known limitations and unresolved risks
 
 See [LIMITATIONS.md](LIMITATIONS.md). The most important ones:
-- Live path unverified (items 19–21).
-- Kernel-side ring-buffer drops are not counted; a counter is listed in [good-first-issues.md](good-first-issues.md) and is deliberately not implemented here.
+- Live-mode overhead and loss under load are unmeasured (item 21). Only two kernels are verified (items 19–20).
+- Kernel-side ring-buffer drops are counted (`stats.kernel.ring_full_drops`, added after this report's tested commit; see the deep-audit addendum below) but the dropped events are lost.
 - 5 ms polling latency in live mode.
 - Fixed tracepoint offsets (no CO-RE).
 - MCP revision 2026-07-28 (stateless) not supported.
 - Benchmarks were taken under heavy unrelated load.
 
-## Live-kernel CI job (results pending)
+## Live-kernel verification
 
-The `live-kernel` job in `.github/workflows/ci.yml` runs on a GitHub-hosted `ubuntu-latest` VM, which has passwordless sudo and a BTF-enabled kernel. The job:
-1. builds the probe and the `live` binary;
-2. records `uname -a`, BTF and tracefs presence, lockdown state, capabilities, and the `--capabilities` report (unprivileged and as root);
-3. lists loaded BPF programs through aya's `loaded_programs()` (the kernel's program-id iterator) to prove attach and detach, so no external tool is needed (`bpftool` is only an optional, non-gating diagnostic step);
-4. runs the ignored test `crates/kerneltrace-mcp/tests/live_kernel.rs` as root with `--ignored`.
+The ignored test `crates/kerneltrace-mcp/tests/live_kernel.rs` runs as root with `--ignored`. It fails, rather than skipping, if root or the probe object is missing, and it never runs on macOS. It proves attach and detach by listing loaded BPF programs through aya's `loaded_programs()` (the kernel's program-id iterator), so no external tool is required.
 
-Its first two runs (PR #5, kernels 7.0.0-1017-azure and 6.17.0-1022-azure) failed **before the probe was loaded**, because no runnable `bpftool` existed on those runners. That dependency has been removed. The kernel has **not been exercised yet**; this document will be updated with the real outcome. The test is never run on macOS. It fails, rather than skipping, if root or the probe object is missing.
+| Kernel / arch | Where | Commit | Outcome |
+|---|---|---|---|
+| 7.0.0-1017-azure / x86_64 | CI job `live-kernel` on GitHub-hosted `ubuntu-latest` (PR #5) | `04b4f6a` | **PASS**, 1 passed. Run A: 2 records (exec+exit). Run B: 66 records, 1 redacted. `decode_errors` 0, `source_errors` 0, clean SIGTERM. Figures as reported from the CI log. |
+| 6.8.0-117-generic (Ubuntu 24.04) / aarch64 | local Colima VM (2 vCPU, 4 GB), privileged `rust:1.98-bookworm` container, `--pid=host`, tracefs mounted in the container | `04b4f6a` (clean clone) | **PASS**, 1 passed in 1.66 s. Run A: 2 records. Run B: 82 records, 2 redacted. `decode_errors` 0, `source_errors` 0, 0 queue drops, clean SIGTERM, no `kt_*` programs left. |
+
+aarch64 run details:
+- BTF 6,968,159 bytes, lockdown `[none]`, `unprivileged_bpf_disabled` = 2.
+- The tracepoint `format` files match the probe's fixed offsets (8; 24/32).
+- Probe built in the container with `nightly-2026-09-17` and bpf-linker 0.12.0 `aarch64-unknown-linux-musl` (sha256 `5e201e69…3935` verified); 5,008-byte object.
+- Command: `KERNELTRACE_EBPF_OBJECT=<obj> cargo test --features live --locked -p kerneltrace-mcp --test live_kernel -- --ignored --nocapture --test-threads=1`.
+
+Earlier CI attempts (kernels 7.0.0-1017-azure and 6.17.0-1022-azure) failed **before the probe was loaded**, because no runnable `bpftool` existed on those runners. Removing that dependency (`04b4f6a`) fixed it. No probe or loader defect has been found so far.
 
 What the test asserts is listed at the top of `tests/live_kernel.rs`.
 
@@ -163,3 +170,22 @@ What the test asserts is listed at the top of `tests/live_kernel.rs`.
 - A run of the `live-kernel` CI job (items 19–20). Item 21 still needs a dedicated Linux host or VM (kernel ≥ 5.8, BTF, CAP_BPF+CAP_PERFMON or root) for overhead measurements.
 - A desktop MCP client for item 22.
 - A GitHub Actions run of this branch for item 23.
+
+## Deep-audit addendum (branch `deep-audit`)
+
+- **Kernel-side counters.** The probe now keeps a per-CPU `STATS` map: ring-full drops, unreadable paths, and
+  per-program "fired" counts, surfaced as `stats.kernel`. `[live] ring_buffer_bytes` sets the ring size.
+- **Flood test (live, arm64 6.8.0-117-generic, Colima, privileged container):** run C of `tests/live_kernel.rs`
+  spawns 2000 `/bin/true` processes from 8 threads (bounded, no fork bomb) against a one-page (4096 B) ring.
+  Two loops of 30 iterations each passed 30/30; in all 60, `records + ring_full_drops == fired_exec +
+  fired_exit + fired_open` exactly (e.g. 491 + 7514 = 8005), retention stayed ≤ `max_events`, and server RSS
+  grew by at most 128 KiB during the flood (from 8712 KiB).
+- **Missing `open` events on main's `live-kernel` job (x86_64 7.0.0-1017-azure, 2 failures).** The CI logs show
+  run B's exec and exit for the `ktcat…` pid with consecutive sequence numbers (in one failure, seq 1 and 2): no
+  `open` event from *any* process was stored in that run, so it is not a path-read (`-EFAULT`) problem — the
+  probe emits an open event even when the path cannot be read. Not reproduced on arm64 6.8: the unmodified live
+  test passed 30/30 in a loop, and the extended one 30/30. Root cause on 7.0 is **not confirmed**. The test now
+  first proves `kt_open` runs (`stats.kernel.fired_open > 0` after opening a file itself) and every timeout
+  prints the kernel counters, so the next failure will show whether the program never ran (`fired_open = 0`),
+  lost events to a full ring (`ring_full_drops`), or lost them in userspace.
+

@@ -1,8 +1,21 @@
 # Kernel compatibility
 
-> **Everything on this page is UNVERIFIED ON HARDWARE.** The probe builds, and `tests/probe_object.rs` checks its program and map layout. It has not yet been loaded into a running kernel by this project. If you run it, please report the result (kernel version, distro, arch) in an issue.
+## Verified kernels
 
-> **Live CI job: results pending.** A `live-kernel` job now exists in `.github/workflows/ci.yml`. It loads the probe on a GitHub-hosted `ubuntu-latest` VM under sudo, traces known processes and a known file, and checks clean detach through aya's loaded-program list. It has not run yet; this page will record the kernel version and outcome once it has.
+The live-kernel integration test (`crates/kerneltrace-mcp/tests/live_kernel.rs`) loads the probe, traces known processes and files, checks pids, comms, paths, ordering and redaction over MCP, and checks clean detach after SIGTERM. It has **passed** on:
+
+| Kernel | Arch | Environment | Commit | Result |
+|---|---|---|---|---|
+| 7.0.0-1017-azure | x86_64 | GitHub-hosted `ubuntu-latest` VM, CI job `live-kernel` (PR #5) | `04b4f6a` | 1 passed. Run A: 2 records (exec+exit). Run B: 66 records, 1 redacted. `decode_errors` 0, `source_errors` 0, clean SIGTERM. **Intermittent:** after merge to main the same job failed twice on this kernel (jobs 119940290509, 119939678398: run B stored exec+exit but no open events); root cause not confirmed — the kernel counters added in this branch will attribute the next failure. |
+| 6.8.0-117-generic (Ubuntu 24.04) | aarch64 | local Colima VM (2 vCPU, 4 GB); privileged container with `--pid=host`; BTF present, lockdown `none`, `unprivileged_bpf_disabled` = 2 | `04b4f6a` | 1 passed in 1.66 s. Run A: 2 records, 0 redacted. Run B: 82 records, 2 redacted. `decode_errors` 0, `source_errors` 0, no queue drops, clean SIGTERM, no `kt_*` programs left. |
+
+On 6.8.0-117-generic/aarch64 the tracepoint `format` files match the offsets below exactly: `sched_process_exec` `__data_loc filename` @ 8; `sys_enter_openat` `filename` @ 24, `flags` @ 32.
+
+Not verified: kernels 5.8–6.7, other distributions, kernels with lockdown `integrity`/`confidentiality`, and anything beyond the test's workload (overhead, loss under load). Reports for other kernels are welcome in an issue (kernel version, distro, arch, test output).
+
+### Running in a container
+
+A container works if it is privileged and shares the host pid namespace (`--pid=host`). The probe reports pids from the initial pid namespace, so a container-namespace pid never matches. Mount tracefs inside the container if it isn't already mounted (`mount -t tracefs nodev /sys/kernel/tracing`). `/sys/kernel/btf/vmlinux` is visible in privileged containers.
 
 ## Requirements for live mode
 
