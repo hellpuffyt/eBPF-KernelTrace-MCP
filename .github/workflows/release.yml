@@ -36,7 +36,7 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="kerneltrace-mcp-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="kerneltrace-mcp-dryrun-${{ matrix.target }}"
           mkdir "$name"
           cp README.md LICENSE-MIT LICENSE-APACHE examples/kerneltrace.toml "$name/"
           if [ -f target/release/kerneltrace-mcp.exe ]; then cp target/release/kerneltrace-mcp.exe "$name/"; else cp target/release/kerneltrace-mcp "$name/"; fi
