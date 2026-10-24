@@ -16,7 +16,9 @@
 use aya_obj::Object;
 use aya_obj::ProgramSection;
 use kerneltrace_common::STAT_SLOTS;
-use kerneltrace_core::live::{INCLUDE_PATHS_GLOBAL, PROGRAMS, RING_MAP, STATS_MAP};
+use kerneltrace_core::live::{
+    Hook, INCLUDE_PATHS_GLOBAL, OPEN_ABI_GLOBALS, PROGRAMS, RING_MAP, STATS_MAP,
+};
 
 const BPF_MAP_TYPE_RINGBUF: u32 = 27;
 const BPF_MAP_TYPE_PERCPU_ARRAY: u32 = 6;
@@ -30,14 +32,29 @@ fn probe_object_matches_loader_expectations() {
     let bytes = std::fs::read(&path).expect("read probe object");
     let obj = Object::parse(&bytes).expect("aya-obj parses the probe");
 
-    for (name, _category, _tracepoint) in PROGRAMS {
+    for (name, hook) in PROGRAMS {
         let prog = obj
             .programs
             .get(name)
             .unwrap_or_else(|| panic!("program {name} missing"));
+        match hook {
+            Hook::TracePoint(..) => assert!(
+                matches!(prog.section, ProgramSection::TracePoint),
+                "{name} is not a tracepoint program"
+            ),
+            Hook::RawTracePoint(..) => assert!(
+                matches!(prog.section, ProgramSection::RawTracePoint),
+                "{name} is not a raw tracepoint program"
+            ),
+        }
+    }
+    // The loader overrides these with `must_exist = true`; their names must
+    // be in the object's string table.
+    for global in OPEN_ABI_GLOBALS.into_iter().chain([INCLUDE_PATHS_GLOBAL]) {
+        let needle = [global.as_bytes(), b"\0"].concat();
         assert!(
-            matches!(prog.section, ProgramSection::TracePoint),
-            "{name} is not a tracepoint program"
+            bytes.windows(needle.len()).any(|w| w == needle),
+            "global {global} missing from the object"
         );
     }
 

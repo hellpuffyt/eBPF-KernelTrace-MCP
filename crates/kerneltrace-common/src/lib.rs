@@ -25,8 +25,54 @@ pub const PATH_LEN: usize = 256;
 pub const KIND_EXEC: u32 = 1;
 /// A task exited (`sched:sched_process_exit`).
 pub const KIND_EXIT: u32 = 2;
-/// A task entered `openat(2)` (`syscalls:sys_enter_openat`).
+/// A task entered `openat(2)` (raw tracepoint `sys_enter`, filtered to `openat`).
 pub const KIND_OPEN: u32 = 3;
+
+/// Where a 64-bit `openat(2)` call keeps its number and arguments at the raw
+/// `sys_enter` tracepoint, whose arguments are `(struct pt_regs *regs, long id)`.
+///
+/// The probe is built once for `bpfel` and loaded on several architectures,
+/// so the loader writes the host's values into the probe's `OPEN_*` globals.
+/// Offsets are byte offsets into the kernel's `struct pt_regs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyscallAbi {
+    /// `__NR_openat` in the native (64-bit) syscall table.
+    pub openat_nr: u64,
+    /// Offset of the register holding `const char *filename` (2nd argument).
+    pub path_off: u64,
+    /// Offset of the register holding `int flags` (3rd argument).
+    pub flags_off: u64,
+    /// Offset of a register that tells native from compat (32-bit) tasks...
+    pub mode_off: u64,
+    /// ...masked with this...
+    pub mode_mask: u64,
+    /// ...must equal this for a native 64-bit syscall. Compat syscalls use a
+    /// different numbering and are not traced (as with `syscalls:sys_enter_openat`).
+    pub mode_want: u64,
+}
+
+/// x86_64: `pt_regs` is r15, r14, r13, r12, bp, bx, r11, r10, r9, r8, ax, cx,
+/// dx, si, di, orig_ax, ip, cs, ... (8 bytes each). Arguments are di, si, dx;
+/// `cs` is `__USER_CS` (0x33) for 64-bit tasks and 0x23 for ia32 tasks.
+pub const ABI_X86_64: SyscallAbi = SyscallAbi {
+    openat_nr: 257,
+    path_off: 13 * 8,  // si
+    flags_off: 12 * 8, // dx
+    mode_off: 17 * 8,  // cs
+    mode_mask: 0xffff,
+    mode_want: 0x33,
+};
+
+/// aarch64: `pt_regs` starts with `regs[31]`, sp, pc, pstate. Arguments are
+/// x0, x1, x2; `pstate` has `PSR_MODE32_BIT` (0x10) set for AArch32 tasks.
+pub const ABI_AARCH64: SyscallAbi = SyscallAbi {
+    openat_nr: 56,
+    path_off: 8,
+    flags_off: 2 * 8,
+    mode_off: 33 * 8, // pstate
+    mode_mask: 0x10,
+    mode_want: 0,
+};
 
 /// Slots of the probe's per-CPU `STATS` counter array (userspace sums the CPUs).
 ///
@@ -128,6 +174,41 @@ mod tests {
         assert_eq!(OFF_PATH_LEN, 48);
         assert_eq!(OFF_PATH, 56);
         assert_eq!(OFF_PATH + PATH_LEN, RAW_EVENT_SIZE);
+    }
+
+    #[test]
+    fn syscall_abis_match_kernel_layouts() {
+        // Argument registers are 8-byte aligned slots inside pt_regs and the
+        // mode register is not an argument register.
+        for abi in [ABI_X86_64, ABI_AARCH64] {
+            for off in [abi.path_off, abi.flags_off, abi.mode_off] {
+                assert_eq!(off % 8, 0);
+            }
+            assert_ne!(abi.path_off, abi.flags_off);
+            assert_ne!(abi.mode_off, abi.path_off);
+            assert_eq!(abi.mode_want & !abi.mode_mask, 0);
+        }
+        // arch/x86/entry/syscalls/syscall_64.tbl, include/uapi/asm-generic/unistd.h
+        assert_eq!(ABI_X86_64.openat_nr, 257);
+        assert_eq!(ABI_AARCH64.openat_nr, 56);
+        // x86_64: si is slot 13, dx slot 12, cs slot 17 (after ip).
+        assert_eq!(
+            (
+                ABI_X86_64.path_off,
+                ABI_X86_64.flags_off,
+                ABI_X86_64.mode_off
+            ),
+            (104, 96, 136)
+        );
+        // aarch64: x1, x2, pstate after regs[31], sp, pc.
+        assert_eq!(
+            (
+                ABI_AARCH64.path_off,
+                ABI_AARCH64.flags_off,
+                ABI_AARCH64.mode_off
+            ),
+            (8, 16, 264)
+        );
     }
 
     #[test]
