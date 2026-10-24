@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Fixed
+- Live mode missed most `open` events on kernels with the 7.0.y backport of "tracing: perf: Fix stale head for perf syscall tracing" (e.g. 7.0.0-1017-azure): the perf-attached `syscalls:sys_enter_openat` program ran only on CPU 0. `kt_open` is now a raw tracepoint on `sys_enter` filtered to `openat`, with per-architecture register offsets (x86_64, aarch64) set by the loader. The live test checks opens on every online CPU.
+- Live test run C could fail its accounting check when a batch was between the reader and the store; it now waits for that batch.
 - Responses are now shaped for the negotiated MCP revision. `annotations` are sent only for 2025-03-26 and later; `title` and `structuredContent` only for 2025-06-18 and later. Previously every client received all of them.
 - Revision 2025-03-26 requires servers to accept JSON-RPC batches, but they were rejected. Batches (max 64) are now accepted for 2024-11-05 and 2025-03-26 and rejected for later revisions.
 - Invalid tool arguments are JSON-RPC `-32602` errors for revisions up to 2025-06-18 and `isError` tool results for 2025-11-25, as each revision's spec requires. Messages now name the offending field.

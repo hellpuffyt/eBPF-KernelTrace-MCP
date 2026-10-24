@@ -108,7 +108,7 @@ The synthetic stream includes paths such as `/home/alice/.ssh/id_ed25519` and `/
 ```mermaid
 flowchart LR
   subgraph kernel["Linux kernel (live mode)"]
-    TP["tracepoints<br/>sched_process_exec · sched_process_exit · sys_enter_openat"] --> P["kerneltrace-ebpf<br/>kt_exec · kt_exit · kt_open"]
+    TP["tracepoints<br/>sched_process_exec · sched_process_exit · raw sys_enter (openat)"] --> P["kerneltrace-ebpf<br/>kt_exec · kt_exit · kt_open"]
     P -->|reserve/submit 312-byte RawEvent| RB[("BPF ring buffer<br/>256 KiB, mmap-shared")]
   end
   SYN["SyntheticSource<br/>(seeded, any OS)"] -->|same bytes| R
@@ -200,9 +200,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 ## Limitations & roadmap
 
 The details are in [docs/LIMITATIONS.md](docs/LIMITATIONS.md). The main limits are:
-- The live path is integration-tested on two kernels only (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64). Overhead and loss under load are unmeasured. On 7.0.0-1017-azure/x86_64 the live test is **intermittent** (2 failures on main, root cause not confirmed; see docs/PRODUCTION_READINESS.md).
+- The live path is integration-tested on two kernels only (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64). Overhead and loss under load are unmeasured. The earlier intermittent failure on 7.0.0-1017-azure/x86_64 was a kernel change that ran perf-attached `sys_enter_*` programs on CPU 0 only; `kt_open` now uses the raw `sys_enter` tracepoint (see docs/KERNEL_COMPAT.md).
 - Kernel-side ring-buffer overflow drops are counted by the probe (`stats.kernel.ring_full_drops`), but the events themselves are lost; raise `[live] ring_buffer_bytes` if that counter grows.
-- Tracepoint offsets are fixed (no CO-RE). `sys_enter_openat` layout changes would break `kt_open`.
+- Tracepoint offsets are fixed (no CO-RE). `kt_open` reads syscall argument registers at per-architecture `pt_regs` offsets (x86_64 and aarch64 only).
 - Live polling sleeps 5 ms when the ring is empty, which adds up to 5 ms of latency.
 - Sampling is deterministic 1-in-N, not statistically unbiased.
 
