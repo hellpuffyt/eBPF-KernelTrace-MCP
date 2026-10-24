@@ -515,3 +515,79 @@ fn rss_kib(pid: u32) -> u64 {
         .and_then(|v| v.split_whitespace().next()?.parse().ok())
         .expect("VmRSS")
 }
+
+/// DIAGNOSTIC (diag/live-intermittent branch only): measures, without
+/// asserting, which `cat` runs get their open events delivered, as a function
+/// of time since the probe attached. Prints one `DIAG` JSON line.
+#[test]
+#[ignore = "diagnostic"]
+fn diag_open_delivery() {
+    let object = std::env::var("KERNELTRACE_EBPF_OBJECT").unwrap_or_default();
+    let id = unique();
+    let dir = std::env::temp_dir().join(format!("kt-diag-{id}"));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let _cleanup = Scratch(dir.clone());
+    let cat_bin = copy_bin("/bin/cat", &dir, &format!("ktdcat{id}"));
+    let files: Vec<PathBuf> = (0..30)
+        .map(|i| {
+            let p = dir.join(format!("f{i}-{id}.txt"));
+            std::fs::write(&p, "x").expect("write");
+            p
+        })
+        .collect();
+    let cfg = dir.join("d.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "mode = \"live\"\n[limits]\nmax_events = 200000\n[sources]\nopen = true\ninclude_paths = true\n[live]\nebpf_object = {object:?}\n"
+        ),
+    )
+    .expect("write");
+    let mut s = start_server(&cfg);
+    let t0 = Instant::now();
+    let stats0 = s.tool("stats", json!({}));
+    let mut runs = Vec::new();
+    for f in &files {
+        let t = t0.elapsed().as_millis() as u64;
+        let child = Command::new(&cat_bin)
+            .arg(f)
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+        child.wait_with_output().expect("wait");
+        runs.push((t, pid, f.clone()));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    let stats = s.tool("stats", json!({}));
+    let mut rows = Vec::new();
+    let mut missing = 0;
+    for (t, pid, f) in &runs {
+        let r = s.tool("query_events", json!({ "pids": [pid], "limit": 500 }));
+        let ev = r["events"].as_array().expect("events");
+        let has = |k: &str| ev.iter().any(|e| e["kind"] == k);
+        let opens = ev.iter().filter(|e| e["kind"] == "open").count();
+        let target = ev
+            .iter()
+            .any(|e| e["kind"] == "open" && e["path"] == f.to_str().unwrap());
+        if !target {
+            missing += 1;
+        }
+        rows.push(json!({"t_ms": t, "exec": has("exec"), "opens": opens, "target": target, "exit": has("exit")}));
+    }
+    let all = s.tool("query_events", json!({ "limit": 500, "kinds": ["open"] }));
+    let n_open_all = all["events"].as_array().map(|a| a.len()).unwrap_or(0);
+    eprintln!(
+        "DIAG {}",
+        json!({"kernel": std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
+               "ftrace": std::env::var("DIAG_FTRACE").unwrap_or_default(),
+               "missing_target": missing, "runs": runs.len(), "open_events_stored": n_open_all,
+               "stats0": stats0["kernel"], "stats": stats, "rows": rows})
+    );
+    eprintln!("DIAG_SUMMARY missing_target={missing}/{}", runs.len());
+    let pid = s.child.id().to_string();
+    let _ = Command::new("kill").args(["-TERM", &pid]).status();
+    let _ = s.wait_exit();
+    wait_until_detached();
+}

@@ -1,0 +1,84 @@
+name: Diag live intermittent
+
+on:
+  push:
+    branches: ["diag/**"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    name: live shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      BPF_LINKER_VERSION: v0.12.0
+      BPF_LINKER_SHA256: 6789717c8cb6a2a5d920f3b6bfac2bd7efc00f6228ecd149108a99699a75c679
+      ITER: "10"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: nightly-2026-09-17
+          components: rust-src
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install bpf-linker
+        run: |
+          url="https://github.com/aya-rs/bpf-linker/releases/download/${BPF_LINKER_VERSION}/bpf-linker-x86_64-unknown-linux-musl.tar.zst"
+          curl -fsSL "$url" -o bpf-linker.tar.zst
+          echo "${BPF_LINKER_SHA256}  bpf-linker.tar.zst" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar --zstd -xf bpf-linker.tar.zst -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Environment
+        run: |
+          uname -a
+          echo "KVER=$(uname -r)"
+          nproc
+          sudo cat /sys/kernel/tracing/events/syscalls/sys_enter_openat/format || true
+          sudo cat /sys/kernel/tracing/events/syscalls/sys_enter_openat/enable || true
+          grep -E 'TRACE_SYSCALL_BUF|CONFIG_PREEMPT' /boot/config-$(uname -r) || true
+      - name: Build probe
+        working-directory: crates/kerneltrace-ebpf
+        run: cargo build --release
+      - name: Build test
+        run: |
+          cargo build --release --features live --locked -p kerneltrace-mcp
+          bin=$(cargo test --features live --locked -p kerneltrace-mcp --test live_kernel --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_kernel" and .profile.test) | .executable')
+          echo "LIVE_TEST_BIN=$bin" >> "$GITHUB_ENV"
+      - name: Loop main live test
+        run: |
+          export KERNELTRACE_EBPF_OBJECT="${GITHUB_WORKSPACE}/crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf"
+          pass=0; fail=0
+          for i in $(seq 1 $ITER); do
+            if sudo -E "$LIVE_TEST_BIN" --ignored --nocapture --test-threads=1 --exact live_probe_reports_known_activity > out-$i.txt 2>&1; then
+              pass=$((pass+1)); echo "ITER $i PASS"
+            else
+              fail=$((fail+1)); echo "ITER $i FAIL"; grep -A3 "panicked" out-$i.txt | head -4
+              grep -E "^stats:|kernel never ran|stayed below" out-$i.txt | cut -c1-1500
+            fi
+          done
+          echo "LOOP_RESULT kernel=$(uname -r) pass=$pass fail=$fail"
+          sudo dmesg | grep -iE "too many tries|trace|bpf" | tail -20 || true
+      - name: Diag open delivery (ftrace off, then on)
+        run: |
+          export KERNELTRACE_EBPF_OBJECT="${GITHUB_WORKSPACE}/crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf"
+          for i in 1 2 3; do
+            sudo -E "$LIVE_TEST_BIN" --ignored --nocapture --test-threads=1 --exact diag_open_delivery 2>&1 | grep -E "^DIAG|panicked" | cut -c1-4000
+          done
+          sudo mkdir -p /sys/kernel/tracing/instances/ktdiag
+          echo 1 | sudo tee /sys/kernel/tracing/instances/ktdiag/events/syscalls/sys_enter_openat/enable
+          for i in 1 2 3; do
+            sudo -E DIAG_FTRACE=1 "$LIVE_TEST_BIN" --ignored --nocapture --test-threads=1 --exact diag_open_delivery 2>&1 | grep -E "^DIAG|panicked" | cut -c1-4000
+          done
+          echo 0 | sudo tee /sys/kernel/tracing/instances/ktdiag/events/syscalls/sys_enter_openat/enable
+          sudo dmesg | grep -iE "too many tries|WARN" | tail -10 || true
