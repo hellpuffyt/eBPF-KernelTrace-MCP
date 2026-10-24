@@ -508,7 +508,9 @@ fn live_probe_reports_known_activity() {
     let stats = loop {
         let stats = s.tool("stats", json!({}));
         let fired_exec = stats["kernel"]["fired_exec"].as_u64().unwrap_or(0);
-        if fired_exec >= PROCS as u64 && stats["queue_len"] == 0 {
+        // `records` and the downstream counters are read at slightly different
+        // moments; wait until a batch in flight between them has landed.
+        if fired_exec >= PROCS as u64 && stats["queue_len"] == 0 && records_accounted(&stats) {
             break stats;
         }
         assert!(
@@ -538,15 +540,8 @@ fn live_probe_reports_known_activity() {
     // exact.)
     assert!(drops < fired, "{stats}");
     // Everything read from the ring is accounted for downstream.
-    let records = stats["records"].as_u64().expect("records");
-    let accounted = stats["decode_errors"].as_u64().unwrap()
-        + stats["disabled_kind"].as_u64().unwrap()
-        + stats["sampled_out"].as_u64().unwrap()
-        + stats["queue_dropped_newest"].as_u64().unwrap()
-        + stats["queue_dropped_oldest"].as_u64().unwrap()
-        + stats["last_seq"].as_u64().unwrap();
-    assert_eq!(
-        records, accounted,
+    assert!(
+        records_accounted(&stats),
         "every record is stored or counted: {stats}"
     );
     assert!(
@@ -554,6 +549,18 @@ fn live_probe_reports_known_activity() {
         "server memory grew from {rss_before} to {rss_after} KiB"
     );
     stop(s);
+}
+
+/// Every record read from the ring is stored (`last_seq`) or counted.
+fn records_accounted(stats: &Value) -> bool {
+    let n = |k: &str| stats[k].as_u64().unwrap_or_else(|| panic!("{k}: {stats}"));
+    n("records")
+        == n("decode_errors")
+            + n("disabled_kind")
+            + n("sampled_out")
+            + n("queue_dropped_newest")
+            + n("queue_dropped_oldest")
+            + n("last_seq")
 }
 
 fn page_size() -> u64 {
