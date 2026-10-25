@@ -1,6 +1,6 @@
 # kerneltrace-ebpf
 
-The in-kernel half of kerneltrace: three tracepoint programs (`kt_exec`, `kt_exit`, `kt_open`) that write fixed-layout `RawEvent` records into a BPF ring buffer named `EVENTS`.
+The in-kernel half of kerneltrace: three programs (tracepoints `kt_exec` and `kt_exit`, raw tracepoint `kt_open` on `sys_enter`) that write fixed-layout `RawEvent` records into a BPF ring buffer named `EVENTS`.
 
 > **Experimental.** Loaded and integration-tested on two kernels (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64) by `crates/kerneltrace-mcp/tests/live_kernel.rs`; other kernels are untested (see `docs/KERNEL_COMPAT.md`).
 

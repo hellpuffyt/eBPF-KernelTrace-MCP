@@ -184,8 +184,9 @@ What the test asserts is listed at the top of `tests/live_kernel.rs`.
   run B's exec and exit for the `ktcat…` pid with consecutive sequence numbers (in one failure, seq 1 and 2): no
   `open` event from *any* process was stored in that run, so it is not a path-read (`-EFAULT`) problem — the
   probe emits an open event even when the path cannot be read. Not reproduced on arm64 6.8: the unmodified live
-  test passed 30/30 in a loop, and the extended one 30/30. Root cause on 7.0 is **not confirmed**. The test now
-  first proves `kt_open` runs (`stats.kernel.fired_open > 0` after opening a file itself) and every timeout
-  prints the kernel counters, so the next failure will show whether the program never ran (`fired_open = 0`),
-  lost events to a full ring (`ring_full_drops`), or lost them in userspace.
+  test passed 30/30 in a loop, and the extended one 30/30. **Root cause (confirmed):** 7.0.0-1017-azure carries
+  a 7.0.y backport that makes `perf_syscall_enter()` return before the BPF program when the current CPU has no
+  perf event, and aya's tracepoint attachment has one perf event on CPU 0, so `kt_open` ran only on CPU 0.
+  Reproduced deterministically by booting that kernel under KVM and pinning the workload per CPU; fixed by moving
+  `kt_open` to the raw `sys_enter` tracepoint. Details and evidence: KERNEL_COMPAT.md, "7.0.y kernels".
 
