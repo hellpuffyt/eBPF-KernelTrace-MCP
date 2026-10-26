@@ -10,15 +10,15 @@ members = [
 exclude = ["crates/kerneltrace-ebpf"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/hellpuffyt/eBPF-KernelTrace-MCP"
 
 [workspace.dependencies]
-kerneltrace-common = { path = "crates/kerneltrace-common", version = "0.1.0" }
-kerneltrace-core = { path = "crates/kerneltrace-core", version = "0.1.0" }
+kerneltrace-common = { path = "crates/kerneltrace-common", version = "0.2.0" }
+kerneltrace-core = { path = "crates/kerneltrace-core", version = "0.2.0" }
 anyhow = "1.0.100"
 aya = "0.14.0"
 clap = { version = "4.6", features = ["derive"] }
