@@ -12,7 +12,7 @@
 
 `kerneltrace-mcp` collects a small, documented set of kernel events (process exec, process exit, `openat`). It filters, samples, redacts and retains them under hard limits, then serves them to any MCP client over stdio. A deterministic **synthetic mode** runs the whole pipeline on any OS without privileges, so you can try it, test it and build on it before you go near a kernel.
 
-> **Status: experimental, 0.1.0. Not production-ready.** The userspace pipeline and MCP server are tested locally on macOS, and CI is configured to run the same suite on Linux, macOS and Windows. The live eBPF path passes an end-to-end integration test on two kernels (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64); see [docs/KERNEL_COMPAT.md](docs/KERNEL_COMPAT.md). Overhead under load has not been measured (see [Limitations](#limitations--roadmap)).
+> **Status: experimental, 0.1.0. Not production-ready.** The userspace pipeline and MCP server are tested in CI on Linux, macOS and Windows. The live eBPF path passes an end-to-end integration test on two kernels (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64); see [docs/KERNEL_COMPAT.md](docs/KERNEL_COMPAT.md). Overhead under load has not been measured (see [Limitations](#limitations--roadmap)).
 
 ```console
 $ kerneltrace-mcp --seed 7 --rate 1000 --open --include-paths --dump 4
@@ -99,7 +99,7 @@ The synthetic stream includes paths such as `/home/alice/.ssh/id_ed25519` and `/
 - Per-kind enable flags, deterministic 1-in-N sampling, and retention by count and by age.
 - Redaction: paths are off by default. When enabled, substring rules hide the whole path and directory-prefix rules hide everything below the prefix.
 - Capability detection: OS, kernel ≥ 5.8, tracefs, CAP_BPF+CAP_PERFMON or CAP_SYS_ADMIN, plus BTF presence (informational). Every unmet requirement is given as a plain-English reason.
-- MCP server over stdio: `initialize` with version negotiation, `ping`, `tools/list`, `tools/call`. Tools: `capabilities`, `query_events`, `summarize_events`, `stats`. All tools are read-only and carry `readOnlyHint` annotations.
+- MCP server over stdio: `initialize` with version negotiation, `ping`, `tools/list`, `tools/call`. Tools: `capabilities`, `query_events`, `summarize_events`, `stats`. All four are read-only. Each declares `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false` when the negotiated revision supports annotations (2025-03-26 and later); 2024-11-05 clients get the same tools without annotations, because that revision has no field for them.
 - Protocol hardening: 1 MiB message cap, parse errors that don't kill the session, strict and bounded argument validation with field-level error messages, tools refused before `initialize`, and graceful shutdown on EOF, SIGINT/SIGTERM or EPIPE.
 - TOML configuration with unknown-key rejection and range validation.
 

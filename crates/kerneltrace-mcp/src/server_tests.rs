@@ -267,6 +267,35 @@ fn invalid_arguments_have_useful_messages_in_every_version() {
     });
 }
 
+/// Every tool must declare all four MCP hints as explicit booleans that match what the
+/// handlers do (read local, in-memory state only), whenever the negotiated revision defines
+/// annotations. Directories such as OpenAI's reject tools missing any of the four.
+#[test]
+fn every_tool_declares_all_four_hints_when_supported() {
+    with_server(|s| {
+        for v in SUPPORTED_VERSIONS {
+            let f = protocol::features(v);
+            init(s, v);
+            let list = send(s, json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}));
+            for t in list["result"]["tools"].as_array().expect("tools") {
+                if f.tool_annotations {
+                    assert_eq!(
+                        t["annotations"],
+                        json!({ "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }),
+                        "{v} {}",
+                        t["name"]
+                    );
+                } else {
+                    assert!(
+                        t.get("annotations").is_none(),
+                        "{v}: annotations predate this revision"
+                    );
+                }
+            }
+        }
+    });
+}
+
 #[test]
 fn results_are_shaped_per_version() {
     with_server(|s| {
