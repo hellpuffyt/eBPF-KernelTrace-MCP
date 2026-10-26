@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-## [0.2.0] - unreleased (tag pending)
+## [0.2.0] - 2026-10-26
 
 ### Fixed
 - Live mode missed most `open` events on kernels with the 7.0.y backport of "tracing: perf: Fix stale head for perf syscall tracing" (e.g. 7.0.0-1017-azure): the perf-attached `syscalls:sys_enter_openat` program ran only on CPU 0. `kt_open` is now a raw tracepoint on `sys_enter` filtered to `openat`, with per-architecture register offsets (x86_64, aarch64) set by the loader. The live test checks opens on every online CPU.
