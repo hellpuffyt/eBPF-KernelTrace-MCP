@@ -1,6 +1,7 @@
 # eBPF-KernelTrace-MCP
 
 ![CI](https://github.com/hellpuffyt/eBPF-KernelTrace-MCP/actions/workflows/ci.yml/badge.svg)
+[![M8ven Score](https://m8ven.ai/badge/mcp/hellpuffyt-ebpf-kerneltrace-mcp-ydx35a?v=0066283100c4bb10897b11c3c9bb9e78)](https://m8ven.ai/mcp/hellpuffyt-ebpf-kerneltrace-mcp-ydx35a?s=readme)
 
 **Give an AI assistant read-only, permission-controlled access to Linux process and file activity, through the Model Context Protocol.**
 
@@ -12,7 +13,7 @@
 
 `kerneltrace-mcp` collects a small, documented set of kernel events (process exec, process exit, `openat`). It filters, samples, redacts and retains them under hard limits, then serves them to any MCP client over stdio. A deterministic **synthetic mode** runs the whole pipeline on any OS without privileges, so you can try it, test it and build on it before you go near a kernel.
 
-> **Status: experimental, 0.1.0. Not production-ready.** The userspace pipeline and MCP server are tested locally on macOS, and CI is configured to run the same suite on Linux, macOS and Windows. The live eBPF path passes an end-to-end integration test on two kernels (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64); see [docs/KERNEL_COMPAT.md](docs/KERNEL_COMPAT.md). Overhead under load has not been measured (see [Limitations](#limitations--roadmap)).
+> **Status: experimental, 0.1.0. Not production-ready.** The userspace pipeline and MCP server are tested in CI on Linux, macOS and Windows. The live eBPF path passes an end-to-end integration test on two kernels (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64); see [docs/KERNEL_COMPAT.md](docs/KERNEL_COMPAT.md). Overhead under load has not been measured (see [Limitations](#limitations--roadmap)).
 
 ```console
 $ kerneltrace-mcp --seed 7 --rate 1000 --open --include-paths --dump 4
@@ -65,6 +66,20 @@ The server speaks newline-delimited JSON-RPC 2.0 on stdio and negotiates MCP rev
 
 The project has tested the server with its own stdio client (`crates/kerneltrace-mcp/tests/mcp_stdio.rs`). It has not yet been verified against a specific third-party client. Reports are welcome.
 
+### Talking to it by hand
+
+An MCP session starts with `initialize`, then the client sends `notifications/initialized`, then tool calls. You can drive it from a shell:
+
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"capabilities","arguments":{}}}' \
+  | ./target/release/kerneltrace-mcp
+```
+
+The first reply names the negotiated revision and the server (`"protocolVersion":"2025-06-18"`, `"serverInfo":{"name":"kerneltrace-mcp",…}`, `"capabilities":{"tools":{"listChanged":false}}`). The second is the tool result: `content` (text), `structuredContent` (the same data as JSON, on revisions that support it) and `isError`. The server exits when stdin closes.
+
 ### A real session
 
 Captured from `kerneltrace-mcp --seed 7 --rate 200 --open --include-paths`. Requests are shown as `→`; only `structuredContent` is shown, abbreviated. Counts depend on how long the server has been running.
@@ -90,6 +105,21 @@ Captured from `kerneltrace-mcp --seed 7 --rate 200 --open --include-paths`. Requ
 
 The synthetic stream includes paths such as `/home/alice/.ssh/id_ed25519` and `/srv/app/.env`. With the default rules these come out as `<redacted>` (or `/home/<redacted>`); the `redacted` counter (52 here) counts them.
 
+### Tools
+
+All four tools are read-only and return JSON. Unknown arguments are rejected.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `capabilities` | none | Whether live eBPF is possible on this host and, if not, every reason; which event kinds and sensitive fields are enabled. |
+| `query_events` | filters (below), `limit` (1 to `max_query_limit`, default 50) | The most recent matching events in sequence order, or with `after_seq` the next page after that sequence number. Includes `matched`, `truncated` and `next_after_seq`. |
+| `summarize_events` | filters, `top_n` (1–50, default 5) | Counts by kind, top command names and pids, event rate. |
+| `stats` | none | Pipeline counters: records read, decode errors, sampled out, redacted, queue drops, evictions, queue latency percentiles. |
+
+Filters: `pids` (array of integers), `comms` (exact command names), `kinds` (`exec`, `exit`, `open`), `path_prefix`, `after_seq`, `last_secs`. Each array holds at most 64 entries and each string at most 4096 bytes, which bounds the cost of a query.
+
+Errors follow JSON-RPC: bad arguments get `-32602` with the field and the limit in the message (for example `limit must be between 1 and 500, got 999999`), an unknown tool name gets `-32602` listing the available tools, malformed JSON gets `-32700` without ending the session, and tool calls before `initialize` are refused.
+
 ## Features
 
 **Implemented**
@@ -99,7 +129,7 @@ The synthetic stream includes paths such as `/home/alice/.ssh/id_ed25519` and `/
 - Per-kind enable flags, deterministic 1-in-N sampling, and retention by count and by age.
 - Redaction: paths are off by default. When enabled, substring rules hide the whole path and directory-prefix rules hide everything below the prefix.
 - Capability detection: OS, kernel ≥ 5.8, tracefs, CAP_BPF+CAP_PERFMON or CAP_SYS_ADMIN, plus BTF presence (informational). Every unmet requirement is given as a plain-English reason.
-- MCP server over stdio: `initialize` with version negotiation, `ping`, `tools/list`, `tools/call`. Tools: `capabilities`, `query_events`, `summarize_events`, `stats`. All tools are read-only and carry `readOnlyHint` annotations.
+- MCP server over stdio: `initialize` with version negotiation, `ping`, `tools/list`, `tools/call`. Tools: `capabilities`, `query_events`, `summarize_events`, `stats`. All four are read-only. Each declares `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false` when the negotiated revision supports annotations (2025-03-26 and later); 2024-11-05 clients get the same tools without annotations, because that revision has no field for them.
 - Protocol hardening: 1 MiB message cap, parse errors that don't kill the session, strict and bounded argument validation with field-level error messages, tools refused before `initialize`, and graceful shutdown on EOF, SIGINT/SIGTERM or EPIPE.
 - TOML configuration with unknown-key rejection and range validation.
 
@@ -174,6 +204,19 @@ cargo bench -p kerneltrace-core --bench pipeline
 cargo run --release -p kerneltrace-core --example pipeline_latency -- 5 0
 ```
 
+What each needs:
+
+- `cargo test` runs on Linux, macOS and Windows with no privileges. It uses the synthetic source, so it does not touch the kernel.
+- The `probe_object` test needs the compiled probe (see [Live mode](#live-mode-on-linux-experimental)) but no privileges.
+- The live-kernel test loads the probe into the running kernel, so it needs Linux, root, tracefs and a kernel ≥ 5.8. It is `#[ignore]`d and CI's `live-kernel` job runs it like this:
+
+```sh
+bin=$(cargo test --features live -p kerneltrace-mcp --test live_kernel --no-run --message-format=json \
+  | jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_kernel" and .profile.test) | .executable')
+sudo KERNELTRACE_EBPF_OBJECT="$PWD/crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf" \
+  "$bin" --ignored --nocapture --test-threads=1
+```
+
 Measured on an Apple M5 (10 cores, 16 GB, macOS 27) with rustc 1.98.0 in release mode, **while other heavy builds were running** (load average ≈ 50). They are userspace numbers only and say nothing about in-kernel probe overhead. Full method and raw output are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 | Measurement | Result |
@@ -200,6 +243,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 | `event source unsupported: unsupported: not Linux` | Live mode only works on Linux. Use the default synthetic mode. |
 | `missing privileges: need CAP_BPF and CAP_PERFMON…` | Run with those capabilities (`setcap` or `sudo`). |
 | `live mode needs [live] ebpf_object` | Build the probe and set the path in your config. |
+| `loading kt_…` / `attaching kt_… to …` | The kernel refused the probe. The kernel's own error follows the colon. Check `--capabilities` first; kernel lockdown in `confidentiality` mode (`/sys/kernel/security/lockdown`) and container seccomp profiles that block `bpf()` are common causes. |
+| Kernel headers missing | Not needed. The probe uses fixed tracepoint offsets, not CO-RE or headers; BTF is reported but not required. |
+| `server not initialized: send initialize before …` | The client called a tool before the MCP `initialize` handshake. |
 | `invalid config: unknown field` | A typo in the TOML. Unknown keys are rejected on purpose. |
 | `query_events` returns no paths | `sources.include_paths` is false (the default). |
 | `queue_dropped_*` keeps rising | The store thread can't keep up. Raise `queue_capacity`, raise `sample_every`, or disable `open`. |

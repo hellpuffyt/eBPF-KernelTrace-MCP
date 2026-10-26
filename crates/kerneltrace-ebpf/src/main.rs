@@ -110,6 +110,7 @@ fn emit(kind: u32, ret: i64, fill_path: impl FnOnce(&mut [u8; PATH_LEN]) -> u32)
     };
     let ev = entry.write(RawEvent::zeroed());
     let pid_tgid = bpf_get_current_pid_tgid();
+    // SAFETY: bpf_ktime_get_ns takes no arguments and only reads the kernel clock.
     ev.ts_ns = unsafe { bpf_ktime_get_ns() };
     ev.ret = ret;
     ev.kind = kind;
