@@ -4,6 +4,12 @@
 
 **Give an AI assistant read-only, permission-controlled access to Linux process and file activity, through the Model Context Protocol.**
 
+[Case study ↗](https://hellpuff.dev/work/ebpf-kerneltrace-mcp)
+
+<img src="docs/assets/overview.svg" width="100%" alt="kerneltrace-mcp data flow: kernel tracepoints and Aya probes write RawEvent records to a BPF ring buffer (or a SyntheticSource emits the same bytes), a reader thread decodes, gates, samples and redacts, a bounded queue feeds the EventStore, and an MCP stdio server exposes four read-only tools">
+
+<sub>Diagram of the real pipeline in `kerneltrace-ebpf`, `kerneltrace-core` (`decode`, `engine`, `queue`, `store`) and `kerneltrace-mcp`. Only the synthetic path runs without Linux and privileges.</sub>
+
 `kerneltrace-mcp` collects a small, documented set of kernel events (process exec, process exit, `openat`). It filters, samples, redacts and retains them under hard limits, then serves them to any MCP client over stdio. A deterministic **synthetic mode** runs the whole pipeline on any OS without privileges, so you can try it, test it and build on it before you go near a kernel.
 
 > **Status: experimental, 0.1.0. Not production-ready.** The userspace pipeline and MCP server are tested locally on macOS, and CI is configured to run the same suite on Linux, macOS and Windows. The live eBPF path passes an end-to-end integration test on two kernels (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64); see [docs/KERNEL_COMPAT.md](docs/KERNEL_COMPAT.md). Overhead under load has not been measured (see [Limitations](#limitations--roadmap)).
@@ -61,7 +67,7 @@ The project has tested the server with its own stdio client (`crates/kerneltrace
 
 ### A real session
 
-Captured from `kerneltrace-mcp --seed 7 --rate 200 --open --include-paths`. Requests are shown as `→`; only `structuredContent` is shown, abbreviated.
+Captured from `kerneltrace-mcp --seed 7 --rate 200 --open --include-paths`. Requests are shown as `→`; only `structuredContent` is shown, abbreviated. Counts depend on how long the server has been running.
 
 ```text
 → {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"summarize_events","arguments":{"top_n":3}}}
@@ -98,7 +104,7 @@ The synthetic stream includes paths such as `/home/alice/.ssh/id_ed25519` and `/
 - TOML configuration with unknown-key rejection and range validation.
 
 **Experimental (integration-tested on 7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64 only)**
-- `kerneltrace-ebpf`: Aya tracepoint programs `kt_exec`, `kt_exit` and `kt_open` writing to a 256 KiB BPF ring buffer. Path reads are gated by a loader-set global.
+- `kerneltrace-ebpf`: Aya tracepoint programs `kt_exec`, `kt_exit` and `kt_open` writing to a BPF ring buffer (256 KiB by default; `[live] ring_buffer_bytes`). Path reads are gated by a loader-set global.
 - `live` feature: loads the object, attaches only the enabled programs and drains the ring buffer.
 
 **Planned** (no code yet): epoll wake-ups instead of 5 ms polling, CO-RE/BTF field access, more event kinds (connect, setuid), a Streamable HTTP transport.
@@ -142,6 +148,7 @@ Every key is optional. Flags (`--mode`, `--seed`, `--rate`, `--open`, `--include
 | `redaction.substrings` | `.ssh`, `.env`, `secret`, `token`, … | hide paths containing these (case-insensitive) |
 | `synthetic.seed` / `rate_per_sec` / `malformed_every` | 42 / 200 / 0 | synthetic source |
 | `live.ebpf_object` | none | path to the compiled probe |
+| `live.ring_buffer_bytes` | 262144 | kernel ring buffer size; power of two, 4096 – 1073741824 |
 
 ## Live mode on Linux (experimental)
 
