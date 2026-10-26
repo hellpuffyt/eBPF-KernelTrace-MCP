@@ -66,6 +66,20 @@ The server speaks newline-delimited JSON-RPC 2.0 on stdio and negotiates MCP rev
 
 The project has tested the server with its own stdio client (`crates/kerneltrace-mcp/tests/mcp_stdio.rs`). It has not yet been verified against a specific third-party client. Reports are welcome.
 
+### Talking to it by hand
+
+An MCP session starts with `initialize`, then the client sends `notifications/initialized`, then tool calls. You can drive it from a shell:
+
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"capabilities","arguments":{}}}' \
+  | ./target/release/kerneltrace-mcp
+```
+
+The first reply names the negotiated revision and the server (`"protocolVersion":"2025-06-18"`, `"serverInfo":{"name":"kerneltrace-mcp",…}`, `"capabilities":{"tools":{"listChanged":false}}`). The second is the tool result: `content` (text), `structuredContent` (the same data as JSON, on revisions that support it) and `isError`. The server exits when stdin closes.
+
 ### A real session
 
 Captured from `kerneltrace-mcp --seed 7 --rate 200 --open --include-paths`. Requests are shown as `→`; only `structuredContent` is shown, abbreviated. Counts depend on how long the server has been running.
