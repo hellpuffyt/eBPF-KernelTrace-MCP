@@ -1,6 +1,7 @@
 # eBPF-KernelTrace-MCP
 
 ![CI](https://github.com/hellpuffyt/eBPF-KernelTrace-MCP/actions/workflows/ci.yml/badge.svg)
+[![M8ven Score](https://m8ven.ai/badge/mcp/hellpuffyt-ebpf-kerneltrace-mcp-ydx35a?v=0066283100c4bb10897b11c3c9bb9e78)](https://m8ven.ai/mcp/hellpuffyt-ebpf-kerneltrace-mcp-ydx35a?s=readme)
 
 **Give an AI assistant read-only, permission-controlled access to Linux process and file activity, through the Model Context Protocol.**
 
@@ -90,6 +91,21 @@ Captured from `kerneltrace-mcp --seed 7 --rate 200 --open --include-paths`. Requ
 
 The synthetic stream includes paths such as `/home/alice/.ssh/id_ed25519` and `/srv/app/.env`. With the default rules these come out as `<redacted>` (or `/home/<redacted>`); the `redacted` counter (52 here) counts them.
 
+### Tools
+
+All four tools are read-only and return JSON. Unknown arguments are rejected.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `capabilities` | none | Whether live eBPF is possible on this host and, if not, every reason; which event kinds and sensitive fields are enabled. |
+| `query_events` | filters (below), `limit` (1 to `max_query_limit`, default 50) | The most recent matching events in sequence order, or with `after_seq` the next page after that sequence number. Includes `matched`, `truncated` and `next_after_seq`. |
+| `summarize_events` | filters, `top_n` (1–50, default 5) | Counts by kind, top command names and pids, event rate. |
+| `stats` | none | Pipeline counters: records read, decode errors, sampled out, redacted, queue drops, evictions, queue latency percentiles. |
+
+Filters: `pids` (array of integers), `comms` (exact command names), `kinds` (`exec`, `exit`, `open`), `path_prefix`, `after_seq`, `last_secs`. Each array holds at most 64 entries and each string at most 4096 bytes, which bounds the cost of a query.
+
+Errors follow JSON-RPC: bad arguments get `-32602` with the field and the limit in the message (for example `limit must be between 1 and 500, got 999999`), an unknown tool name gets `-32602` listing the available tools, malformed JSON gets `-32700` without ending the session, and tool calls before `initialize` are refused.
+
 ## Features
 
 **Implemented**
@@ -174,6 +190,19 @@ cargo bench -p kerneltrace-core --bench pipeline
 cargo run --release -p kerneltrace-core --example pipeline_latency -- 5 0
 ```
 
+What each needs:
+
+- `cargo test` runs on Linux, macOS and Windows with no privileges. It uses the synthetic source, so it does not touch the kernel.
+- The `probe_object` test needs the compiled probe (see [Live mode](#live-mode-on-linux-experimental)) but no privileges.
+- The live-kernel test loads the probe into the running kernel, so it needs Linux, root, tracefs and a kernel ≥ 5.8. It is `#[ignore]`d and CI's `live-kernel` job runs it like this:
+
+```sh
+bin=$(cargo test --features live -p kerneltrace-mcp --test live_kernel --no-run --message-format=json \
+  | jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_kernel" and .profile.test) | .executable')
+sudo KERNELTRACE_EBPF_OBJECT="$PWD/crates/kerneltrace-ebpf/target/bpfel-unknown-none/release/kerneltrace-ebpf" \
+  "$bin" --ignored --nocapture --test-threads=1
+```
+
 Measured on an Apple M5 (10 cores, 16 GB, macOS 27) with rustc 1.98.0 in release mode, **while other heavy builds were running** (load average ≈ 50). They are userspace numbers only and say nothing about in-kernel probe overhead. Full method and raw output are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 | Measurement | Result |
@@ -200,6 +229,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 | `event source unsupported: unsupported: not Linux` | Live mode only works on Linux. Use the default synthetic mode. |
 | `missing privileges: need CAP_BPF and CAP_PERFMON…` | Run with those capabilities (`setcap` or `sudo`). |
 | `live mode needs [live] ebpf_object` | Build the probe and set the path in your config. |
+| `loading kt_…` / `attaching kt_… to …` | The kernel refused the probe. The kernel's own error follows the colon. Check `--capabilities` first; kernel lockdown in `confidentiality` mode (`/sys/kernel/security/lockdown`) and container seccomp profiles that block `bpf()` are common causes. |
+| Kernel headers missing | Not needed. The probe uses fixed tracepoint offsets, not CO-RE or headers; BTF is reported but not required. |
+| `server not initialized: send initialize before …` | The client called a tool before the MCP `initialize` handshake. |
 | `invalid config: unknown field` | A typo in the TOML. Unknown keys are rejected on purpose. |
 | `query_events` returns no paths | `sources.include_paths` is false (the default). |
 | `queue_dropped_*` keeps rising | The store thread can't keep up. Raise `queue_capacity`, raise `sample_every`, or disable `open`. |
