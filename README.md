@@ -7,10 +7,6 @@
 
 [Case study ↗](https://hellpuff.dev/work/ebpf-kerneltrace-mcp)
 
-<img src="docs/assets/overview.svg" width="100%" alt="kerneltrace-mcp data flow: kernel tracepoints and Aya probes write RawEvent records to a BPF ring buffer (or a SyntheticSource emits the same bytes), a reader thread decodes, gates, samples and redacts, a bounded queue feeds the EventStore, and an MCP stdio server exposes four read-only tools">
-
-<sub>Diagram of the real pipeline in `kerneltrace-ebpf`, `kerneltrace-core` (`decode`, `engine`, `queue`, `store`) and `kerneltrace-mcp`. Only the synthetic path runs without Linux and privileges.</sub>
-
 `kerneltrace-mcp` collects a small, documented set of kernel events (process exec, process exit, `openat`). It filters, samples, redacts and retains them under hard limits, then serves them to any MCP client over stdio. A deterministic **synthetic mode** runs the whole pipeline on any OS without privileges, so you can try it, test it and build on it before you go near a kernel.
 
 > **Status: experimental, 0.2.0. Not production-ready.** The userspace pipeline and MCP server are tested in CI on Linux, macOS and Windows. The live eBPF path passes an end-to-end integration test on two kernels (7.0.0-1017-azure/x86_64 and 6.8.0-117-generic/aarch64); see [docs/KERNEL_COMPAT.md](docs/KERNEL_COMPAT.md). Overhead under load has not been measured (see [Limitations](#limitations--roadmap)).
@@ -23,6 +19,31 @@ $ kerneltrace-mcp --seed 7 --rate 1000 --open --include-paths --dump 4
 {"seq":4,"ts_ns":4000000,"received_ns":6347791,"kind":"open","pid":1002,"tid":1002,"uid":1000,"comm":"nginx","path":"/etc/hosts","ret":524288}
 ```
 (Synthetic events. `ret` holds the `openat` flags; 524288 = `O_CLOEXEC`. `received_ns` depends on timing; everything else is fixed by the seed.)
+
+## Demo (synthetic mode)
+
+These are terminal captures from a release build on macOS. eBPF needs a Linux kernel and root, so they show **synthetic mode**: the seeded `SyntheticSource` feeds the same decode, filter, redact and store pipeline and the same MCP server that live mode uses. The process names, pids and paths are generated test data, not a real host.
+
+<img src="docs/screenshots/synthetic-capabilities-and-dump.png" width="100%" alt="Terminal: kerneltrace-mcp --capabilities reports live_supported false on macOS with the reasons, then --dump 6 prints six synthetic exec, exit and open events as JSON lines">
+
+<sub>`--capabilities` explains why live mode is unavailable on this host, then `--dump 6` prints six synthetic events from seed 7.</sub>
+
+<img src="docs/screenshots/synthetic-mcp-stdio-session.png" width="100%" alt="Terminal: an MCP stdio session with initialize, a summarize_events call returning counts by kind and top commands, and a query_events call for paths under /home whose results come back as /home/<redacted>">
+
+<sub>A stdio MCP session: `initialize`, then `summarize_events` and `query_events` with `path_prefix: "/home"`. The matching paths come back as `/home/<redacted>` because the default redaction rules apply even with `--include-paths`.</sub>
+
+The session above, so you can run it yourself after `cargo build --release`:
+
+```sh
+( printf '%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+    '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  sleep 1
+  printf '%s\n' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"summarize_events","arguments":{"top_n":3}}}' \
+    '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_events","arguments":{"path_prefix":"/home","limit":2}}}'
+) | ./target/release/kerneltrace-mcp --seed 7 --rate 200 --open --include-paths
+```
 
 ## Why
 
@@ -140,6 +161,10 @@ Errors follow JSON-RPC: bad arguments get `-32602` with the field and the limit 
 **Planned** (no code yet): epoll wake-ups instead of 5 ms polling, CO-RE/BTF field access, more event kinds (connect, setuid), a Streamable HTTP transport.
 
 ## Architecture
+
+<img src="docs/assets/overview.svg" width="100%" alt="kerneltrace-mcp data flow: kernel tracepoints and Aya probes write RawEvent records to a BPF ring buffer (or a SyntheticSource emits the same bytes), a reader thread decodes, gates, samples and redacts, a bounded queue feeds the EventStore, and an MCP stdio server exposes four read-only tools">
+
+<sub>Diagram of the real pipeline in `kerneltrace-ebpf`, `kerneltrace-core` (`decode`, `engine`, `queue`, `store`) and `kerneltrace-mcp`. Only the synthetic path runs without Linux and privileges.</sub>
 
 ```mermaid
 flowchart LR
