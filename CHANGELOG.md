@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0] - unreleased (tag pending)
+
 ### Fixed
 - Live mode missed most `open` events on kernels with the 7.0.y backport of "tracing: perf: Fix stale head for perf syscall tracing" (e.g. 7.0.0-1017-azure): the perf-attached `syscalls:sys_enter_openat` program ran only on CPU 0. `kt_open` is now a raw tracepoint on `sys_enter` filtered to `openat`, with per-architecture register offsets (x86_64, aarch64) set by the loader. The live test checks opens on every online CPU.
 - Live test run C could fail its accounting check when a batch was between the reader and the store; it now waits for that batch.
@@ -26,6 +28,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [0.1.0] - 2026-10-22
 
+Never tagged or published as a release; the link points at the commit that matched this entry.
+
 ### Added
 - `kerneltrace-common`: `no_std` 312-byte `RawEvent` layout with offset/size tests.
 - `kerneltrace-core`: safe decoder (property-tested), seeded synthetic source, bounded non-blocking queue with `drop_oldest`/`drop_newest` and drop counters, per-kind gates, deterministic 1-in-N sampler, count/age retention, path redaction (off by default), summaries, capability detection, threaded engine with graceful shutdown.
@@ -34,5 +38,6 @@ All notable changes to this project are documented here. The format follows [Kee
 - Linux `live` source behind the `live` feature (experimental, unverified on hardware).
 - Criterion benchmarks and an end-to-end latency example; docs for architecture, kernel compatibility, limitations and benchmarks.
 
-[Unreleased]: https://github.com/hellpuffyt/eBPF-KernelTrace-MCP/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/hellpuffyt/eBPF-KernelTrace-MCP/releases/tag/v0.1.0
+[Unreleased]: https://github.com/hellpuffyt/eBPF-KernelTrace-MCP/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/hellpuffyt/eBPF-KernelTrace-MCP/compare/62ae9ad...v0.2.0
+[0.1.0]: https://github.com/hellpuffyt/eBPF-KernelTrace-MCP/tree/62ae9ad26c4728f68a05eaace3cd920c5e2b2c7b

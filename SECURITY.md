@@ -2,14 +2,14 @@
 
 ## Reporting a vulnerability
 
-Please **do not** open a public issue. Report privately via GitHub's private vulnerability reporting:
+Please **do not** open a public issue. Report privately with GitHub's private vulnerability reporting (the "Report a vulnerability" button on the Security tab; you need to be signed in to GitHub):
 <https://github.com/hellpuffyt/eBPF-KernelTrace-MCP/security/advisories/new>
 
 Include the version or commit, your platform, reproduction steps and the impact you see. You should get an acknowledgement within 7 days. This is a volunteer project with no bug bounty.
 
 ## Supported versions
 
-Only the latest release on `main` receives fixes while the project is at 0.x.
+Fixes land on `main` and go into the next release. While the project is at 0.x only the latest release is supported; older releases don't get backports.
 
 ## Scope
 
